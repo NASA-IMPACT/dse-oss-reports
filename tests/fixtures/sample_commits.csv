@@ -1,0 +1,5 @@
+sha,message,author,committer,url,total_changes,organization,repository
+aaa111,feat: widget improvement,Alice Example,GitHub,https://github.com/acme/widget/commit/aaa111,42,acme,widget
+bbb222,fix: widget bug,Alice Example,GitHub,https://github.com/acme/widget/commit/bbb222,5,acme,widget
+ccc333,feat: gizmo feature,Bob Example,GitHub,https://github.com/acme/gizmo/commit/ccc333,128,acme,gizmo
+ddd444,docs: doohickey README,Carol Example,GitHub,https://github.com/globex/doohickey/commit/ddd444,3,globex,doohickey
