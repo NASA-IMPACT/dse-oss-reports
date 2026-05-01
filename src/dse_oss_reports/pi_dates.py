@@ -13,12 +13,27 @@ PIDates = dict[str, tuple[str, str]]
 
 def get_current_pi(pi_dates: PIDates, today: date | None = None) -> str | None:
     """Return the PI name whose date range contains ``today`` (defaults to now), or ``None``."""
-    raise NotImplementedError
+    today_str = (today or date.today()).strftime("%Y%m%d")
+    for pi_name, (start, end) in pi_dates.items():
+        if start <= today_str <= end:
+            return pi_name
+    return None
 
 
-def get_time_range(pi_dates: PIDates, pi: str | None = None) -> tuple[str, str]:
+def get_time_range(
+    pi_dates: PIDates,
+    pi: str | None = None,
+    *,
+    today: date | None = None,
+) -> tuple[str, str]:
     """Return the ``(start, end)`` date strings for ``pi``, or for the current PI if ``None``.
 
     Falls back to the most recently defined PI window if no PI matches today.
+    Raises ``KeyError`` if ``pi`` is given but missing from ``pi_dates``.
     """
-    raise NotImplementedError
+    if pi is not None:
+        return pi_dates[pi]
+    current = get_current_pi(pi_dates, today=today)
+    if current is not None:
+        return pi_dates[current]
+    return list(pi_dates.values())[-1]
