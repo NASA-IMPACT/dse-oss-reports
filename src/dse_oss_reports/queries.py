@@ -105,11 +105,19 @@ def fetch_commits(
         finally:
             g.close()
 
+    logger.info(
+        "Fetching commits for %d (repo, contributor) pairs (max_workers=%d)...",
+        len(tasks),
+        max_workers,
+    )
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(process, t) for t in tasks]
-        for future in as_completed(futures):
+        for i, future in enumerate(as_completed(futures), 1):
             rows.extend(future.result())
+            if i % 50 == 0 or i == len(tasks):
+                logger.info("  commits progress: %d/%d", i, len(tasks))
+    logger.info("Found %d commits", len(rows))
 
     return pd.DataFrame(rows, columns=_COMMIT_COLUMNS)
 
@@ -203,10 +211,17 @@ def fetch_resolved(
         finally:
             g.close()
 
+    logger.info(
+        "Fetching resolved issues/PRs for %d contributors (max_workers=%d)...",
+        len(contributors),
+        max_workers,
+    )
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(process, c) for c in contributors]
-        for future in as_completed(futures):
+        for i, future in enumerate(as_completed(futures), 1):
             rows.extend(future.result())
+            logger.info("  resolved progress: %d/%d", i, len(contributors))
+    logger.info("Found %d resolved issues/PRs", len(rows))
 
     return pd.DataFrame(rows, columns=_RESOLVED_COLUMNS)
