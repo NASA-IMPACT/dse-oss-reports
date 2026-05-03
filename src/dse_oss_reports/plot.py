@@ -24,6 +24,27 @@ logger = logging.getLogger(__name__)
 _NO_OBJECTIVE_COLOR = "#95a5a6"  # gray, for repos that map to no objective
 
 
+def _strip_scheme(url: str) -> str:
+    return url.removeprefix("https://").removeprefix("http://")
+
+
+def _render_caveats(ax, lines: list[str]) -> None:
+    """Render a caveats text block in the bottom-right of the axes."""
+    ax.text(
+        1.0,
+        -0.06,
+        "\n".join(lines),
+        fontsize=8,
+        style="italic",
+        horizontalalignment="right",
+        verticalalignment="top",
+        transform=ax.transAxes,
+        bbox=dict(
+            boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8
+        ),
+    )
+
+
 def _build_palette(size: int = 30) -> list[str]:
     """Combine matplotlib's tab20 + tab20b + tab20c (60 distinct hues) → first ``size``."""
     colors: list[str] = []
@@ -182,6 +203,21 @@ def plot_counts(
             title_fontsize=10,
         )
 
+    _render_caveats(
+        ax,
+        [
+            "Caveats:",
+            "- Only community-governed open source repositories are tracked",
+            "- Merged PRs counted as one commit",
+            "- Individual changes may span multiple PRs",
+            "- Split bars indicate repos in multiple objectives",
+            f"- Includes all commits by {settings.team_display_name} members to listed repos, "
+            "regardless of project",
+            "",
+            f"Objective details: {_strip_scheme(settings.objectives_page_url)}",
+        ],
+    )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
@@ -201,6 +237,7 @@ def plot_combined_counts(
     csv_path: Path,
     pi: str,
     team_objectives: dict[str, ObjectivesDict],
+    team_settings: dict[str, TeamSettings],
     *,
     title: str,
     x_label: str,
@@ -216,8 +253,17 @@ def plot_combined_counts(
     prefixed with ``[{team_name}]``. Unlike ``plot_counts``, the ``title`` is taken
     verbatim — the caller composes the full title (no ``team_name`` auto-prefix).
 
+    ``team_settings`` must have the same keys as ``team_objectives``; it's used to
+    render the caveats block (display names + objectives URLs) at the bottom of
+    the chart.
+
     Returns the output path on success, or ``None`` if the CSV is missing/empty.
     """
+    if team_objectives.keys() != team_settings.keys():
+        raise ValueError(
+            "team_objectives and team_settings must have identical keys; "
+            f"got {sorted(team_objectives)} vs {sorted(team_settings)}."
+        )
     if not csv_path.exists():
         logger.info("No data at %s; skipping combined plot.", csv_path)
         return None
@@ -303,6 +349,33 @@ def plot_combined_counts(
             title=f"{pi.upper()} Objectives",
             title_fontsize=10,
         )
+
+    display_names = [team_settings[k].team_display_name for k in team_objectives]
+    if len(display_names) == 1:
+        members_clause = f"{display_names[0]} members"
+    elif len(display_names) == 2:
+        members_clause = f"{display_names[0]} and {display_names[1]} members"
+    else:
+        members_clause = ", ".join(display_names[:-1]) + f", and {display_names[-1]} members"
+
+    objective_lines = ["Objective details:"] + [
+        f"  {_strip_scheme(team_settings[k].objectives_page_url)}" for k in team_objectives
+    ]
+    _render_caveats(
+        ax,
+        [
+            "Caveats:",
+            "- Only community-governed open source repositories are tracked",
+            "- Merged PRs counted as one commit",
+            "- Individual changes may span multiple PRs",
+            "- Split bars indicate repos contributing to multiple objectives "
+            "(within or across teams)",
+            f"- Includes all commits by {members_clause} to listed repos, regardless of project",
+            "- A commit appearing in multiple teams' planning repos is counted once",
+            "",
+            *objective_lines,
+        ],
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight", dpi=150)

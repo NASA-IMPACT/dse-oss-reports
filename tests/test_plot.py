@@ -236,6 +236,10 @@ def test_plot_combined_counts_handles_colliding_issue_numbers_across_teams(
         csv_path=sample_commits_csv,
         pi="pi-26.1",
         team_objectives={"team-a": team_a, "team-b": team_b},
+        team_settings={
+            "team-a": make_settings(team_name="A", team_display_name="Team A"),
+            "team-b": make_settings(team_name="B", team_display_name="Team B"),
+        },
         title="PI-26.1 VEDA combined commits",
         x_label="Number of Commits",
         output_path=out_path,
@@ -253,9 +257,25 @@ def test_plot_combined_counts_returns_none_for_missing_csv(sample_objectives, tm
         csv_path=tmp_path / "nope.csv",
         pi="pi-26.1",
         team_objectives={"team-a": sample_objectives},
+        team_settings={"team-a": make_settings()},
         title="combined",
         x_label="Number of Commits",
         output_path=tmp_path / "out.png",
     )
     assert returned is None
     assert not (tmp_path / "out.png").exists()
+
+
+def test_plot_combined_counts_rejects_mismatched_team_keys(sample_objectives, tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match="identical keys"):
+        plot_combined_counts(
+            csv_path=tmp_path / "irrelevant.csv",
+            pi="pi-26.1",
+            team_objectives={"team-a": sample_objectives},
+            team_settings={"team-b": make_settings()},  # mismatched
+            title="combined",
+            x_label="Number of Commits",
+            output_path=tmp_path / "out.png",
+        )
