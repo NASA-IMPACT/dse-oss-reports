@@ -8,6 +8,7 @@ from dse_oss_reports.plot import (
     _objective_short_title,
     _repo_labels,
     _repo_to_objectives,
+    plot_combined_counts,
     plot_counts,
 )
 
@@ -196,3 +197,65 @@ def test_plot_counts_returns_none_when_csv_has_no_rows(sample_objectives, tmp_pa
     )
     assert returned is None
     assert not out_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# plot_combined_counts
+# ---------------------------------------------------------------------------
+
+
+def test_plot_combined_counts_handles_colliding_issue_numbers_across_teams(
+    sample_commits_csv, tmp_path
+):
+    """Two teams whose planning repos both number objective #101 must not collide."""
+    team_a = {
+        "pi-26.1": [
+            {
+                "issue_number": 101,
+                "title": "Team A Objective Alpha",
+                "state": "open",
+                "contributors": [],
+                "repos": [("acme", "widget")],
+            }
+        ]
+    }
+    team_b = {
+        "pi-26.1": [
+            {
+                "issue_number": 101,  # same number as team_a — must be namespaced
+                "title": "Team B Objective Beta",
+                "state": "open",
+                "contributors": [],
+                "repos": [("acme", "gizmo")],
+            }
+        ]
+    }
+
+    out_path = tmp_path / "combined.png"
+    returned = plot_combined_counts(
+        csv_path=sample_commits_csv,
+        pi="pi-26.1",
+        team_objectives={"team-a": team_a, "team-b": team_b},
+        title="PI-26.1 VEDA combined commits",
+        x_label="Number of Commits",
+        output_path=out_path,
+    )
+
+    assert returned == out_path
+    assert out_path.is_file()
+    contents = out_path.read_bytes()
+    assert contents[:4] == b"\x89PNG"
+    assert len(contents) > 1000
+
+
+def test_plot_combined_counts_returns_none_for_missing_csv(sample_objectives, tmp_path):
+    returned = plot_combined_counts(
+        csv_path=tmp_path / "nope.csv",
+        pi="pi-26.1",
+        team_objectives={"team-a": sample_objectives},
+        title="combined",
+        x_label="Number of Commits",
+        output_path=tmp_path / "out.png",
+    )
+    assert returned is None
+    assert not (tmp_path / "out.png").exists()

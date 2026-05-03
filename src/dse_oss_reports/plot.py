@@ -195,3 +195,117 @@ def _title_of(objectives: ObjectivesDict, pi: str, issue_number: int) -> str:
         if obj["issue_number"] == issue_number:
             return obj["title"]
     return f"#{issue_number}"
+
+
+def plot_combined_counts(
+    csv_path: Path,
+    pi: str,
+    team_objectives: dict[str, ObjectivesDict],
+    *,
+    title: str,
+    x_label: str,
+    output_path: Path,
+    show_labels: bool = False,
+) -> Path | None:
+    """Render a multi-team aggregate chart from ``csv_path``.
+
+    Like :func:`plot_counts`, but accepts objectives from multiple teams. Bars are
+    colored by objective using a shared palette; the per-team objective spaces are
+    namespaced internally on ``(team_name, issue_number)`` so two teams' planning
+    repos can both have an objective ``#100`` without collision. Legend entries are
+    prefixed with ``[{team_name}]``. Unlike ``plot_counts``, the ``title`` is taken
+    verbatim — the caller composes the full title (no ``team_name`` auto-prefix).
+
+    Returns the output path on success, or ``None`` if the CSV is missing/empty.
+    """
+    if not csv_path.exists():
+        logger.info("No data at %s; skipping combined plot.", csv_path)
+        return None
+
+    try:
+        df = pd.read_csv(csv_path)
+    except pd.errors.EmptyDataError:
+        df = pd.DataFrame()
+
+    required = {"organization", "repository"}
+    if df.empty or not required.issubset(df.columns):
+        logger.info("CSV %s has no plotable rows; skipping combined plot.", csv_path)
+        return None
+
+    df = df.copy()
+    df["repo_label"] = _repo_labels(df)
+    df["full_repo"] = df["organization"] + "/" + df["repository"]
+
+    full_repo_for_label = df.groupby("repo_label")["full_repo"].first().to_dict()
+    counts = df["repo_label"].value_counts().sort_values(ascending=True)
+
+    # full_repo -> list of (team_name, issue_number) keys it belongs to.
+    # (team_name, issue_number) -> color and title.
+    repo_to_keys: dict[str, list[tuple[str, int]]] = {}
+    obj_colors: dict[tuple[str, int], str] = {}
+    obj_titles: dict[tuple[str, int], str] = {}
+
+    color_idx = 0
+    for team_name, objectives in team_objectives.items():
+        for obj in objectives.get(pi, []):
+            key = (team_name, obj["issue_number"])
+            obj_colors[key] = _PALETTE[color_idx % len(_PALETTE)]
+            obj_titles[key] = obj["title"]
+            color_idx += 1
+            for org, repo in obj["repos"]:
+                repo_to_keys.setdefault(f"{org}/{repo}", []).append(key)
+
+    fig, ax = plt.subplots(1, 1, figsize=(16, max(6, 0.4 * len(counts) + 2)))
+
+    for i, (label, count) in enumerate(counts.items()):
+        full = full_repo_for_label.get(label, label)
+        keys = repo_to_keys.get(full, [])
+        if not keys:
+            ax.barh(i, count, color=_NO_OBJECTIVE_COLOR, edgecolor="black", linewidth=1.0)
+        elif len(keys) == 1:
+            ax.barh(
+                i, count, color=obj_colors[keys[0]], edgecolor="black", linewidth=1.0
+            )
+        else:
+            width = count / len(keys)
+            x = 0
+            for key in keys:
+                ax.barh(
+                    i, width, left=x, color=obj_colors[key], edgecolor="black", linewidth=1.0
+                )
+                x += width
+
+    ax.set_yticks(range(len(counts)))
+    ax.set_yticklabels(counts.index)
+    ax.set_xlabel(x_label, fontsize=14, loc="left")
+    ax.tick_params(axis="y", labelsize=11)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.grid(axis="x", alpha=0.3)
+    ax.set_title(title, fontsize=20, fontweight="bold")
+
+    if show_labels:
+        for i, v in enumerate(counts.values):
+            ax.text(v + 0.5, i, str(v), ha="left", va="center", fontweight="bold")
+
+    if obj_colors:
+        legend = [
+            Patch(
+                facecolor=color,
+                edgecolor="black",
+                label=f"[{team}] {_objective_short_title(obj_titles[(team, num)])}",
+            )
+            for (team, num), color in obj_colors.items()
+        ]
+        ax.legend(
+            handles=legend,
+            loc="lower right",
+            fontsize=9,
+            title=f"{pi.upper()} Objectives",
+            title_fontsize=10,
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    logger.info("Wrote combined chart to %s", output_path)
+    return output_path
