@@ -227,6 +227,24 @@ def fetch_resolved(
     return pd.DataFrame(rows, columns=_RESOLVED_COLUMNS)
 
 
+def _dedup_and_sort_resolved(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse cross-contributor duplicates and sort for stable CSV output.
+
+    A single issue/PR involving multiple tracked contributors appears once per
+    contributor in the raw search results. Plot counts treat each row as a
+    distinct resolution, so we drop duplicates on ``(organization, repository,
+    number)`` (first row wins — attribution is whichever thread finished first)
+    and sort by the same triple for diff-friendly output.
+    """
+    if df.empty:
+        return df
+    return (
+        df.drop_duplicates(subset=["organization", "repository", "number"])
+        .sort_values(by=["organization", "repository", "number"])
+        .reset_index(drop=True)
+    )
+
+
 def fetch_commits_and_resolved(
     token: str | None,
     tasks: list[Task],
@@ -288,13 +306,16 @@ def fetch_commits_and_resolved(
             if i % 25 == 0 or i == total:
                 logger.info("  combined progress: %d/%d", i, total)
 
+    resolved_df = _dedup_and_sort_resolved(
+        pd.DataFrame(resolved_rows, columns=_RESOLVED_COLUMNS)
+    )
     logger.info(
-        "Found %d commits and %d resolved issues/PRs",
+        "Found %d commits and %d resolved issues/PRs (after dedup)",
         len(commit_rows),
-        len(resolved_rows),
+        len(resolved_df),
     )
 
     return (
         pd.DataFrame(commit_rows, columns=_COMMIT_COLUMNS),
-        pd.DataFrame(resolved_rows, columns=_RESOLVED_COLUMNS),
+        resolved_df,
     )

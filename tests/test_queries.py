@@ -8,7 +8,7 @@ shape PyGithub exposes for the calls we make — anything not used here is omitt
 from datetime import datetime
 from types import SimpleNamespace
 
-from dse_oss_reports.queries import fetch_commits, fetch_resolved
+from dse_oss_reports.queries import fetch_commits, fetch_commits_and_resolved, fetch_resolved
 
 # ---------------------------------------------------------------------------
 # Fake PyGithub objects
@@ -405,3 +405,62 @@ def test_fetch_resolved_swallows_per_contributor_errors(monkeypatch):
     assert len(df) == 0
     assert "number" in df.columns
     assert "contributor" in df.columns
+
+
+# ---------------------------------------------------------------------------
+# fetch_commits_and_resolved
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_commits_and_resolved_dedups_cross_contributor_resolved_rows(monkeypatch):
+    """A single issue surfacing under multiple contributors collapses to one row."""
+    fake = FakeGithub(
+        repos={
+            "acme/widget": FakeRepo(commits=[]),  # no commits — exercise resolved path
+        },
+        issue_results=[
+            # Same issue #42 visible to both alice and bob's search queries
+            make_fake_resolved(number=42, title="shared bug", org="acme", repo="widget", is_pr=False),
+        ],
+    )
+    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
+    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
+
+    _, resolved_df = fetch_commits_and_resolved(
+        token=None,
+        tasks=[("acme", "widget", "alice"), ("acme", "widget", "bob")],
+        contributors=[("Alice Example", "alice"), ("Bob Example", "bob")],
+        time_start=datetime(2026, 1, 1),
+        time_end=datetime(2026, 4, 1),
+        max_workers=2,
+    )
+
+    # Issue #42 collapses to one row (vs. the two raw rows fetch_resolved would return).
+    assert len(resolved_df) == 1
+    assert resolved_df.iloc[0]["number"] == 42
+    assert resolved_df.iloc[0]["contributor"] in {"alice", "bob"}
+
+
+def test_fetch_commits_and_resolved_sorts_resolved_by_org_repo_number(monkeypatch):
+    """Sorted output keeps PR-to-PR CSV diffs clean."""
+    fake = FakeGithub(
+        repos={"acme/widget": FakeRepo(commits=[])},
+        issue_results=[
+            make_fake_resolved(number=99, title="late", org="acme", repo="widget", is_pr=False),
+            make_fake_resolved(number=1, title="early", org="acme", repo="widget", is_pr=False),
+            make_fake_resolved(number=42, title="middle", org="acme", repo="widget", is_pr=False),
+        ],
+    )
+    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
+    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
+
+    _, resolved_df = fetch_commits_and_resolved(
+        token=None,
+        tasks=[("acme", "widget", "alice")],
+        contributors=[("Alice Example", "alice")],
+        time_start=datetime(2026, 1, 1),
+        time_end=datetime(2026, 4, 1),
+        max_workers=1,
+    )
+
+    assert resolved_df["number"].tolist() == [1, 42, 99]
