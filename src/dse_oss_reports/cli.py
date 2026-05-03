@@ -18,7 +18,7 @@ from dse_oss_reports.objectives import (
 )
 from dse_oss_reports.pi_dates import PIDates, get_current_pi, get_time_range
 from dse_oss_reports.plot import plot_counts
-from dse_oss_reports.queries import fetch_commits, fetch_resolved
+from dse_oss_reports.queries import fetch_commits_and_resolved
 from dse_oss_reports.settings import TeamSettings
 
 logger = logging.getLogger(__name__)
@@ -42,14 +42,15 @@ def run_commits_report(
     objectives: ObjectivesDict,
     *,
     pi: str | None = None,
-    max_workers: int = 3,
+    max_workers: int = 10,
     output_dir: Path = Path("output"),
 ) -> dict[str, Path]:
     """Fetch authored commits + resolved issues/PRs for one PI, write both CSVs.
 
     Resolves ``pi`` and the time window from ``pi_dates``, derives tasks from
     ``objectives`` via ``get_repos_x_contributors_for_pi``, runs both query types
-    in parallel, and writes ``{output_dir}/{pi}-authored-commits.csv`` and
+    in a single shared thread pool, and writes
+    ``{output_dir}/{pi}-authored-commits.csv`` and
     ``{output_dir}/{pi}-resolved-issues-prs.csv``. Returns a dict mapping
     ``"commits"`` and ``"resolved"`` to the paths written.
     """
@@ -70,9 +71,13 @@ def run_commits_report(
         len(contributors),
     )
 
-    commits_df = fetch_commits(token, tasks, time_start, time_end, max_workers=max_workers)
-    resolved_df = fetch_resolved(
-        token, tasks, contributors, time_start, time_end, max_workers=max_workers
+    commits_df, resolved_df = fetch_commits_and_resolved(
+        token,
+        tasks,
+        contributors,
+        time_start,
+        time_end,
+        max_workers=max_workers,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)

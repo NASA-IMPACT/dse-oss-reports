@@ -42,18 +42,21 @@ def test_run_commits_report_writes_both_csvs_at_harmonized_paths(
 ):
     captured: dict = {}
 
-    def fake_fetch_commits(token, tasks, time_start, time_end, *, max_workers):
-        captured["commits_args"] = (token, tasks, time_start, time_end, max_workers)
-        return pd.DataFrame([{"sha": "abc", "organization": "acme", "repository": "widget"}])
-
-    def fake_fetch_resolved(token, tasks, contributors, time_start, time_end, *, max_workers):
-        captured["resolved_args"] = (token, tasks, contributors, time_start, time_end, max_workers)
-        return pd.DataFrame(
+    def fake_fetch_combined(
+        token, tasks, contributors, time_start, time_end, *, max_workers
+    ):
+        captured["args"] = (token, tasks, contributors, time_start, time_end, max_workers)
+        commits_df = pd.DataFrame(
+            [{"sha": "abc", "organization": "acme", "repository": "widget"}]
+        )
+        resolved_df = pd.DataFrame(
             [{"number": 1, "organization": "acme", "repository": "widget", "contributor": "alice"}]
         )
+        return commits_df, resolved_df
 
-    monkeypatch.setattr("dse_oss_reports.cli.fetch_commits", fake_fetch_commits)
-    monkeypatch.setattr("dse_oss_reports.cli.fetch_resolved", fake_fetch_resolved)
+    monkeypatch.setattr(
+        "dse_oss_reports.cli.fetch_commits_and_resolved", fake_fetch_combined
+    )
 
     paths = run_commits_report(
         token="fake-token",
@@ -71,8 +74,7 @@ def test_run_commits_report_writes_both_csvs_at_harmonized_paths(
     assert paths["commits"].is_file()
     assert paths["resolved"].is_file()
 
-    # fetch_commits got the tasks derived from pi-26.2's objectives
-    _, tasks, ts, te, mw = captured["commits_args"]
+    _, tasks, contributors, ts, te, mw = captured["args"]
     assert mw == 5
     assert ts == datetime(2026, 1, 18)
     assert te == datetime(2026, 4, 25)
@@ -83,9 +85,6 @@ def test_run_commits_report_writes_both_csvs_at_harmonized_paths(
         ("globex", "doohickey", "alice"),
         ("globex", "doohickey", "carol"),
     }
-
-    # fetch_resolved got the same tasks plus contributors
-    _, _, contributors, _, _, _ = captured["resolved_args"]
     assert set(c[1] for c in contributors) == {"alice", "carol"}
 
 
@@ -95,12 +94,8 @@ def test_run_commits_report_defaults_pi_to_current(
     # Force "current PI" to be pi-26.2 by passing today inside its window via patching.
     # Simpler: the resolver picks the latest defined PI when today is outside all windows.
     monkeypatch.setattr(
-        "dse_oss_reports.cli.fetch_commits",
-        lambda *a, **kw: pd.DataFrame(),
-    )
-    monkeypatch.setattr(
-        "dse_oss_reports.cli.fetch_resolved",
-        lambda *a, **kw: pd.DataFrame(),
+        "dse_oss_reports.cli.fetch_commits_and_resolved",
+        lambda *a, **kw: (pd.DataFrame(), pd.DataFrame()),
     )
 
     paths = run_commits_report(

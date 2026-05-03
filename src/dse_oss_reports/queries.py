@@ -225,3 +225,76 @@ def fetch_resolved(
     logger.info("Found %d resolved issues/PRs", len(rows))
 
     return pd.DataFrame(rows, columns=_RESOLVED_COLUMNS)
+
+
+def fetch_commits_and_resolved(
+    token: str | None,
+    tasks: list[Task],
+    contributors: list[Contributor],
+    time_start: datetime,
+    time_end: datetime,
+    *,
+    max_workers: int = 10,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Fetch commits and resolved issues/PRs in a single shared thread pool.
+
+    Submits both kinds of work to one ``ThreadPoolExecutor`` so commit-API tasks
+    interleave with search-API tasks. The dilution keeps concurrent search-API
+    calls well under GitHub's secondary rate limit, where two sequential pools
+    (one all-commits, one all-search) would burst the search endpoint and trip
+    rate-limit / 502 responses. Returns ``(commits_df, resolved_df)``.
+    """
+
+    def process_commits(task: Task) -> list[dict]:
+        owner, repo, author = task
+        g = _make_client(token)
+        try:
+            return _fetch_commits_for_task(g, owner, repo, author, time_start, time_end)
+        finally:
+            g.close()
+
+    def process_resolved(contributor_pair: Contributor) -> list[dict]:
+        _name, username = contributor_pair
+        g = _make_client(token)
+        try:
+            return _fetch_resolved_for_contributor(g, tasks, username, time_start, time_end)
+        finally:
+            g.close()
+
+    total = len(tasks) + len(contributors)
+    logger.info(
+        "Fetching %d commit tasks + %d resolved tasks in shared pool (max_workers=%d)...",
+        len(tasks),
+        len(contributors),
+        max_workers,
+    )
+
+    commit_rows: list[dict] = []
+    resolved_rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_kind: dict = {}
+        for t in tasks:
+            future_kind[executor.submit(process_commits, t)] = "commit"
+        for c in contributors:
+            future_kind[executor.submit(process_resolved, c)] = "resolved"
+
+        for i, future in enumerate(as_completed(future_kind), 1):
+            kind = future_kind[future]
+            result = future.result()
+            if kind == "commit":
+                commit_rows.extend(result)
+            else:
+                resolved_rows.extend(result)
+            if i % 25 == 0 or i == total:
+                logger.info("  combined progress: %d/%d", i, total)
+
+    logger.info(
+        "Found %d commits and %d resolved issues/PRs",
+        len(commit_rows),
+        len(resolved_rows),
+    )
+
+    return (
+        pd.DataFrame(commit_rows, columns=_COMMIT_COLUMNS),
+        pd.DataFrame(resolved_rows, columns=_RESOLVED_COLUMNS),
+    )
