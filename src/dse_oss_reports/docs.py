@@ -20,6 +20,24 @@ def _sorted_pis(objectives: ObjectivesDict, *, reverse: bool = True) -> list[str
     return sorted(objectives.keys(), key=lambda x: float(x.split("-")[1]), reverse=reverse)
 
 
+def _state_label(obj: dict) -> str:
+    """Render an objective's state for the past-PI table.
+
+    Mirrors GitHub's "Closed as completed" / "Closed as not planned" taxonomy:
+    closed objectives gain the reason in parentheses when known. Falls back to
+    plain ``"closed"`` for legacy data modules that pre-date ``state_reason``.
+    """
+    state = obj["state"]
+    if state != "closed":
+        return state
+    reason = obj.get("state_reason")
+    if reason == "completed":
+        return "closed (completed)"
+    if reason == "not_planned":
+        return "closed (not planned)"
+    return "closed"
+
+
 def render_objectives_md(
     objectives: ObjectivesDict,
     settings: TeamSettings,
@@ -89,7 +107,11 @@ def render_objectives_md(
         lines.append("")
         for pi in past_pis:
             pi_objs = objectives[pi]
-            closed = sum(1 for o in pi_objs if o["state"] == "closed")
+            closed = sum(
+                1
+                for o in pi_objs
+                if o["state"] == "closed" and o.get("state_reason") != "not_planned"
+            )
             pi_label = f"PI {pi.split('-')[1]}"
             lines.append("<details markdown>")
             lines.append(
@@ -102,9 +124,10 @@ def render_objectives_md(
                 num = obj["issue_number"]
                 title = _short_objective_title(obj["title"], max_len=50)
                 contributors = ", ".join(u for _, u in obj["contributors"]) or "-"
+                state_label = _state_label(obj)
                 lines.append(
                     f"| [#{num}]({repo_url}/issues/{num}) "
-                    f"| {title} | {obj['state']} | {contributors} |"
+                    f"| {title} | {state_label} | {contributors} |"
                 )
             lines.append("")
             lines.append(

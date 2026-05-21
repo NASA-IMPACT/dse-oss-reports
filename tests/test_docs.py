@@ -82,3 +82,78 @@ def test_empty_objectives_renders_just_the_header_without_crashing():
     assert md.startswith("# Quarterly Objectives")
     # No Current PI section, no past PIs section, but the configuration footer is fine.
     assert "## Current PI:" not in md
+
+
+def test_past_pi_closed_count_excludes_not_planned():
+    """Past-PI summary "(N objectives, M closed)" must NOT count not-planned items."""
+    objectives = {
+        "pi-26.1": [
+            {
+                "issue_number": 1, "title": "Done", "state": "closed",
+                "state_reason": "completed",
+                "contributors": [], "repos": [],
+            },
+            {
+                "issue_number": 2, "title": "Dropped", "state": "closed",
+                "state_reason": "not_planned",
+                "contributors": [], "repos": [],
+            },
+            {
+                "issue_number": 3, "title": "Still open", "state": "open",
+                "state_reason": None,
+                "contributors": [], "repos": [],
+            },
+        ],
+        "pi-26.2": [
+            {
+                "issue_number": 10, "title": "Current", "state": "open",
+                "state_reason": None,
+                "contributors": [], "repos": [],
+            },
+        ],
+    }
+    md = render_objectives_md(objectives, make_settings(), current_pi="pi-26.2")
+    # 3 objectives in pi-26.1, only 1 truly completed (not the not_planned one).
+    assert "PI 26.1 (3 objectives, 1 closed)" in md
+
+
+def test_past_pi_state_column_shows_completion_reason():
+    """State column renders 'closed (completed)' / 'closed (not planned)' / 'open' / 'closed'."""
+    objectives = {
+        "pi-26.1": [
+            {
+                "issue_number": 1, "title": "Done", "state": "closed",
+                "state_reason": "completed",
+                "contributors": [], "repos": [],
+            },
+            {
+                "issue_number": 2, "title": "Dropped", "state": "closed",
+                "state_reason": "not_planned",
+                "contributors": [], "repos": [],
+            },
+            {
+                "issue_number": 3, "title": "Still open", "state": "open",
+                "state_reason": None,
+                "contributors": [], "repos": [],
+            },
+            {
+                "issue_number": 4, "title": "Old issue, no reason", "state": "closed",
+                # no state_reason key at all — simulates legacy data module
+                "contributors": [], "repos": [],
+            },
+        ],
+        "pi-26.2": [
+            {
+                "issue_number": 10, "title": "Current", "state": "open",
+                "state_reason": None,
+                "contributors": [], "repos": [],
+            },
+        ],
+    }
+    md = render_objectives_md(objectives, make_settings(), current_pi="pi-26.2")
+
+    assert "| closed (completed) |" in md
+    assert "| closed (not planned) |" in md
+    assert "| open |" in md
+    # Legacy row with no state_reason key falls back to plain "closed".
+    assert "| closed |" in md
