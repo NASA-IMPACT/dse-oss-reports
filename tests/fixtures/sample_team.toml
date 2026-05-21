@@ -1,0 +1,12 @@
+[team]
+name = "ODD"
+display_name = "VEDA/EODC ODD"
+github_org = "NASA-IMPACT"
+github_repo = "veda-odd"
+site_url = "nasa-impact.github.io/veda-odd"
+objectives_page_url = "https://nasa-impact.github.io/veda-odd/objectives"
+token_env_var = "GH_ODD_PAT"
+
+[pi_dates]
+"pi-26.1" = ["20251019", "20260117"]
+"pi-26.2" = ["20260118", "20260425"]
