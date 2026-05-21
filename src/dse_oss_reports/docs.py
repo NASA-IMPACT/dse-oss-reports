@@ -20,6 +20,51 @@ def _sorted_pis(objectives: ObjectivesDict, *, reverse: bool = True) -> list[str
     return sorted(objectives.keys(), key=lambda x: float(x.split("-")[1]), reverse=reverse)
 
 
+def _past_pi_summary(pi_objs: list[dict]) -> str:
+    """Render the parenthesized summary suffix for a past-PI ``<details>`` block.
+
+    Always includes original-objective count and both closed buckets (even when
+    zero). Appends a ``still open`` segment only when at least one objective is
+    still open — common case for past PIs has none. Closed objectives missing a
+    ``state_reason`` (legacy data modules) count as completed, matching the
+    pre-``state_reason`` GitHub semantics where every closure was implicitly
+    "completed".
+    """
+    total = len(pi_objs)
+    not_planned = sum(
+        1 for o in pi_objs if o["state"] == "closed" and o.get("state_reason") == "not_planned"
+    )
+    completed = sum(1 for o in pi_objs if o["state"] == "closed") - not_planned
+    still_open = total - completed - not_planned
+
+    segments = [
+        f"{total} original objectives",
+        f"{completed} closed as completed",
+        f"{not_planned} closed as not planned",
+    ]
+    if still_open:
+        segments.append(f"{still_open} still open")
+    return "(" + "; ".join(segments) + ")"
+
+
+def _state_label(obj: dict) -> str:
+    """Render an objective's state for the past-PI table.
+
+    Mirrors GitHub's "Closed as completed" / "Closed as not planned" taxonomy:
+    closed objectives gain the reason in parentheses when known. Falls back to
+    plain ``"closed"`` for legacy data modules that pre-date ``state_reason``.
+    """
+    state = obj["state"]
+    if state != "closed":
+        return state
+    reason = obj.get("state_reason")
+    if reason == "completed":
+        return "closed (completed)"
+    if reason == "not_planned":
+        return "closed (not planned)"
+    return "closed"
+
+
 def render_objectives_md(
     objectives: ObjectivesDict,
     settings: TeamSettings,
@@ -89,12 +134,9 @@ def render_objectives_md(
         lines.append("")
         for pi in past_pis:
             pi_objs = objectives[pi]
-            closed = sum(1 for o in pi_objs if o["state"] == "closed")
             pi_label = f"PI {pi.split('-')[1]}"
             lines.append("<details markdown>")
-            lines.append(
-                f"<summary>{pi_label} ({len(pi_objs)} objectives, {closed} closed)</summary>"
-            )
+            lines.append(f"<summary>{pi_label} {_past_pi_summary(pi_objs)}</summary>")
             lines.append("")
             lines.append("| # | Objective | State | Contributors |")
             lines.append("|---|-----------|-------|--------------|")
@@ -102,9 +144,10 @@ def render_objectives_md(
                 num = obj["issue_number"]
                 title = _short_objective_title(obj["title"], max_len=50)
                 contributors = ", ".join(u for _, u in obj["contributors"]) or "-"
+                state_label = _state_label(obj)
                 lines.append(
                     f"| [#{num}]({repo_url}/issues/{num}) "
-                    f"| {title} | {obj['state']} | {contributors} |"
+                    f"| {title} | {state_label} | {contributors} |"
                 )
             lines.append("")
             lines.append(

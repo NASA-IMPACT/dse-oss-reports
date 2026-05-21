@@ -306,9 +306,7 @@ def fetch_commits_and_resolved(
             if i % 25 == 0 or i == total:
                 logger.info("  combined progress: %d/%d", i, total)
 
-    resolved_df = _dedup_and_sort_resolved(
-        pd.DataFrame(resolved_rows, columns=_RESOLVED_COLUMNS)
-    )
+    resolved_df = _dedup_and_sort_resolved(pd.DataFrame(resolved_rows, columns=_RESOLVED_COLUMNS))
     logger.info(
         "Found %d commits and %d resolved issues/PRs (after dedup)",
         len(commit_rows),

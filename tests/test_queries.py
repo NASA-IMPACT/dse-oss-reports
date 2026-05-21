@@ -420,7 +420,9 @@ def test_fetch_commits_and_resolved_dedups_cross_contributor_resolved_rows(monke
         },
         issue_results=[
             # Same issue #42 visible to both alice and bob's search queries
-            make_fake_resolved(number=42, title="shared bug", org="acme", repo="widget", is_pr=False),
+            make_fake_resolved(
+                number=42, title="shared bug", org="acme", repo="widget", is_pr=False
+            ),
         ],
     )
     monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)

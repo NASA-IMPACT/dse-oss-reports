@@ -50,6 +50,9 @@ def _render_data_module(objectives: ObjectivesDict) -> str:
             title = obj["title"].replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'            "title": "{title}",')
             lines.append(f'            "state": "{obj["state"]}",')
+            state_reason = obj.get("state_reason")
+            state_reason_literal = "None" if state_reason is None else f'"{state_reason}"'
+            lines.append(f'            "state_reason": {state_reason_literal},')
             lines.append('            "contributors": [')
             for name, username in obj["contributors"]:
                 rendered_name = (name or username).replace("\\", "\\\\").replace('"', '\\"')
@@ -128,15 +131,14 @@ class ObjectivesGenerator:
                         "issue_number": issue.number,
                         "title": issue.title,
                         "state": issue.state,
+                        "state_reason": issue.state_reason,
                         "contributors": contributors,
                         "repos": repos,
                     }
                 )
             for pi_key, objs in sorted(objectives_by_pi.items()):
                 repo_count = sum(len(o["repos"]) for o in objs)
-                logger.info(
-                    "  %s: %d objectives, %d repo mappings", pi_key, len(objs), repo_count
-                )
+                logger.info("  %s: %d objectives, %d repo mappings", pi_key, len(objs), repo_count)
             return objectives_by_pi
         finally:
             g.close()

@@ -32,6 +32,7 @@ def test_render_escapes_quotes_in_titles_and_names():
                 "issue_number": 1,
                 "title": 'Title with "quotes" and a backslash \\ in it',
                 "state": "open",
+                "state_reason": None,
                 "contributors": [('Name with "quotes"', "user")],
                 "repos": [],
             }
@@ -48,12 +49,13 @@ def test_render_escapes_quotes_in_titles_and_names():
 # ---------------------------------------------------------------------------
 
 
-def make_fake_issue(*, number, title, state, label_names, assignees):
+def make_fake_issue(*, number, title, state, label_names, assignees, state_reason=None):
     """Build an object whose attribute shape matches a PyGithub issue search result."""
     return SimpleNamespace(
         number=number,
         title=title,
         state=state,
+        state_reason=state_reason,
         labels=[SimpleNamespace(name=n) for n in label_names],
         assignees=[SimpleNamespace(name=name, login=login) for name, login in assignees],
     )
@@ -100,6 +102,7 @@ def test_fetch_groups_one_issue_under_its_pi(monkeypatch):
                 "issue_number": 101,
                 "title": "ODD PI 26.1 Objective: Test",
                 "state": "open",
+                "state_reason": None,
                 "contributors": [("Alice Example", "alice")],
                 "repos": [("acme", "widget")],
             }
@@ -211,6 +214,29 @@ def test_fetch_groups_multiple_issues_under_their_respective_pis(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_fetch_captures_state_reason_for_not_planned_issues(monkeypatch):
+    """An issue closed as "not planned" must carry state_reason="not_planned"."""
+    fake = FakeGithub(
+        [
+            make_fake_issue(
+                number=12,
+                title="Dropped objective",
+                state="closed",
+                state_reason="not_planned",
+                label_names=["pi-26.2-objective", "repo:acme/widget"],
+                assignees=[],
+            )
+        ]
+    )
+    patch_github(monkeypatch, fake)
+
+    gen = ObjectivesGenerator(token="fake", github_repo="NASA-IMPACT/test-team")
+    result = gen.fetch()
+
+    assert result["pi-26.2"][0]["state_reason"] == "not_planned"
+    assert result["pi-26.2"][0]["state"] == "closed"
+
+
 def test_write_data_module_writes_round_trippable_source(monkeypatch, tmp_path):
     fake = FakeGithub(
         [
@@ -240,6 +266,7 @@ def test_write_data_module_writes_round_trippable_source(monkeypatch, tmp_path):
                 "issue_number": 42,
                 "title": "Test objective",
                 "state": "open",
+                "state_reason": None,
                 "contributors": [("Alice Example", "alice")],
                 "repos": [("acme", "widget")],
             }
