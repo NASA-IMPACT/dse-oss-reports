@@ -1,5 +1,7 @@
 """Render `docs/objectives.md` from an OBJECTIVES dict."""
 
+from pathlib import Path
+
 from dse_oss_reports.objectives import ObjectivesDict
 from dse_oss_reports.settings import TeamSettings
 
@@ -65,12 +67,27 @@ def _state_label(obj: dict) -> str:
     return "closed"
 
 
+def _image_line(
+    pi: str,
+    suffix: str,
+    alt_suffix: str,
+    images_dir_relative: str,
+    images_dir: Path | None,
+) -> str | None:
+    """Build a markdown image line for a PI chart, or None if ``images_dir`` says it's missing."""
+    filename = f"{pi}-{suffix}.png"
+    if images_dir is not None and not (images_dir / filename).exists():
+        return None
+    return f"![{pi.upper()} {alt_suffix}]({images_dir_relative}/{filename})"
+
+
 def render_objectives_md(
     objectives: ObjectivesDict,
     settings: TeamSettings,
     *,
     current_pi: str | None = None,
     images_dir_relative: str = "images",
+    images_dir: Path | None = None,
 ) -> str:
     """Build the markdown body of ``docs/objectives.md`` for a team.
 
@@ -83,7 +100,9 @@ def render_objectives_md(
 
     ``current_pi`` defaults to the chronologically latest key in ``objectives``.
     Image links use ``{images_dir_relative}/{pi}-authored-commits.png`` and
-    ``{images_dir_relative}/{pi}-resolved-issues-prs.png``.
+    ``{images_dir_relative}/{pi}-resolved-issues-prs.png``. When ``images_dir`` is
+    given, links are only emitted for PNGs that actually exist there — useful for
+    older PIs whose charts may not have been generated.
     """
     repo_url = f"https://github.com/{settings.repo_full_name}"
     lines = [
@@ -105,16 +124,14 @@ def render_objectives_md(
     pi_short = current_pi.split("-")[1]
     lines.append(f"## Current PI: {pi_short}")
     lines.append("")
-    lines.append(
-        f"![{current_pi.upper()} authored commits]"
-        f"({images_dir_relative}/{current_pi}-authored-commits.png)"
-    )
-    lines.append("")
-    lines.append(
-        f"![{current_pi.upper()} resolved issues and PRs]"
-        f"({images_dir_relative}/{current_pi}-resolved-issues-prs.png)"
-    )
-    lines.append("")
+    for suffix, alt in (
+        ("authored-commits", "authored commits"),
+        ("resolved-issues-prs", "resolved issues and PRs"),
+    ):
+        line = _image_line(current_pi, suffix, alt, images_dir_relative, images_dir)
+        if line is not None:
+            lines.append(line)
+            lines.append("")
     lines.append("| # | Objective | Contributors | Repos |")
     lines.append("|---|-----------|--------------|-------|")
     for obj in sorted(objectives[current_pi], key=lambda x: x["issue_number"]):
@@ -150,10 +167,14 @@ def render_objectives_md(
                     f"| {title} | {state_label} | {contributors} |"
                 )
             lines.append("")
-            lines.append(
-                f"![{pi.upper()} authored commits]({images_dir_relative}/{pi}-authored-commits.png)"
-            )
-            lines.append("")
+            for suffix, alt in (
+                ("authored-commits", "authored commits"),
+                ("resolved-issues-prs", "resolved issues and PRs"),
+            ):
+                line = _image_line(pi, suffix, alt, images_dir_relative, images_dir)
+                if line is not None:
+                    lines.append(line)
+                    lines.append("")
             lines.append("</details>")
             lines.append("")
 
