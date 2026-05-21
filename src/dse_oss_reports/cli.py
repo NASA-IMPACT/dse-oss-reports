@@ -171,17 +171,23 @@ def run_generate_docs(
     current_pi: str | None = None,
     images_dir_relative: str = "images",
     output_path: Path = Path("../docs/objectives.md"),
+    images_dir: Path | None = None,
 ) -> Path:
     """Render the team's ``docs/objectives.md`` from the OBJECTIVES dict.
 
     ``output_path`` defaults to the consuming repo's ``docs/objectives.md`` when
-    invoked with cwd at ``reports/``. Returns the path written.
+    invoked with cwd at ``reports/``. When ``images_dir`` is None, it is resolved
+    to ``output_path.parent / images_dir_relative`` so past-PI image links are
+    only emitted for charts that actually exist on disk. Returns the path written.
     """
+    if images_dir is None:
+        images_dir = output_path.parent / images_dir_relative
     markdown = render_objectives_md(
         objectives,
         settings,
         current_pi=current_pi,
         images_dir_relative=images_dir_relative,
+        images_dir=images_dir,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(markdown)
