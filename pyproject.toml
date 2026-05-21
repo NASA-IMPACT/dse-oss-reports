@@ -15,6 +15,9 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/NASA-IMPACT/dse-oss-reports"
 
+[project.scripts]
+dse-oss-reports = "dse_oss_reports.main:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

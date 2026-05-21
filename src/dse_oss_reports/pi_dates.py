@@ -1,14 +1,25 @@
-"""Pure helpers for resolving the current Program Increment from a date table.
+"""Shared Program Increment calendar and helpers for resolving the current PI.
 
-Each team maintains its own ``PI_DATES`` table (typically in their
-``reports/constants.py``) — a dict mapping ``"pi-X.Y"`` to ``(start, end)``
-date strings in ``YYYYMMDD`` format. The library takes the table as input
-rather than owning the data, so different teams can use different windows.
+All DSE teams share the same fiscal calendar, so ``PI_DATES`` is library-managed
+rather than per-team — bumping the library ref propagates new PI windows to every
+consumer. Teams can override individual entries via ``[pi_dates]`` in their
+``team.toml`` if they need to, but the default is to inherit from here.
 """
 
 from datetime import date
 
 PIDates = dict[str, tuple[str, str]]
+
+# Shared org-wide PI calendar. Add new entries when each new quarter starts.
+PI_DATES: PIDates = {
+    "pi-25.2": ("20250119", "20250418"),
+    "pi-25.3": ("20250419", "20250718"),
+    "pi-25.4": ("20250719", "20251018"),
+    "pi-26.1": ("20251019", "20260117"),
+    "pi-26.2": ("20260118", "20260425"),
+    "pi-26.3": ("20260426", "20260711"),
+    "pi-26.4": ("20260712", "20261017"),
+}
 
 
 def get_current_pi(pi_dates: PIDates, today: date | None = None) -> str | None:

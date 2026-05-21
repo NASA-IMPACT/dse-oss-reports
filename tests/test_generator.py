@@ -1,8 +1,15 @@
-"""Tests for generator.ObjectivesGenerator and the private render helper."""
+"""Tests for generator.ObjectivesGenerator and the private render helpers."""
 
+import json
 from types import SimpleNamespace
 
-from dse_oss_reports.generator import ObjectivesGenerator, _render_data_module
+import pytest
+
+from dse_oss_reports.generator import (
+    ObjectivesGenerator,
+    _render_data_json,
+    _render_data_module,
+)
 
 # ---------------------------------------------------------------------------
 # Render helper (pure, no network)
@@ -235,6 +242,66 @@ def test_fetch_captures_state_reason_for_not_planned_issues(monkeypatch):
 
     assert result["pi-26.2"][0]["state_reason"] == "not_planned"
     assert result["pi-26.2"][0]["state"] == "closed"
+
+
+def test_render_data_json_round_trips_through_json_load(sample_objectives):
+    """JSON render → json.loads should reproduce the dict (with tuples → lists)."""
+    source = _render_data_json(sample_objectives)
+    rebuilt = json.loads(source)
+
+    # Walk both structures, normalizing tuples to lists for comparison.
+    def to_lists(obj):
+        if isinstance(obj, dict):
+            return {k: to_lists(v) for k, v in obj.items()}
+        if isinstance(obj, list | tuple):
+            return [to_lists(x) for x in obj]
+        return obj
+
+    assert rebuilt == to_lists(sample_objectives)
+
+
+def test_write_data_module_writes_json_when_extension_is_json(monkeypatch, tmp_path):
+    """Passing a .json path makes write_data_module emit JSON, not Python source."""
+    fake = FakeGithub(
+        [
+            make_fake_issue(
+                number=42,
+                title="Test objective",
+                state="open",
+                label_names=["pi-26.2-objective", "repo:acme/widget"],
+                assignees=[("Alice Example", "alice")],
+            )
+        ]
+    )
+    patch_github(monkeypatch, fake)
+
+    gen = ObjectivesGenerator(token="fake", github_repo="NASA-IMPACT/test-team")
+    out_path = tmp_path / "_objectives_data.json"
+    returned = gen.write_data_module(out_path)
+
+    assert returned == out_path
+    data = json.loads(out_path.read_text())
+    assert data == {
+        "pi-26.2": [
+            {
+                "issue_number": 42,
+                "title": "Test objective",
+                "state": "open",
+                "state_reason": None,
+                "contributors": [["Alice Example", "alice"]],
+                "repos": [["acme", "widget"]],
+            }
+        ]
+    }
+
+
+def test_write_data_module_rejects_unsupported_extension(monkeypatch, tmp_path):
+    fake = FakeGithub([])
+    patch_github(monkeypatch, fake)
+
+    gen = ObjectivesGenerator(token="fake", github_repo="NASA-IMPACT/test-team")
+    with pytest.raises(ValueError, match=r"\.json or \.py"):
+        gen.write_data_module(tmp_path / "data.yaml")
 
 
 def test_write_data_module_writes_round_trippable_source(monkeypatch, tmp_path):
