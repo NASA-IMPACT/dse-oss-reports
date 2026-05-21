@@ -42,21 +42,15 @@ def test_run_commits_report_writes_both_csvs_at_harmonized_paths(
 ):
     captured: dict = {}
 
-    def fake_fetch_combined(
-        token, tasks, contributors, time_start, time_end, *, max_workers
-    ):
+    def fake_fetch_combined(token, tasks, contributors, time_start, time_end, *, max_workers):
         captured["args"] = (token, tasks, contributors, time_start, time_end, max_workers)
-        commits_df = pd.DataFrame(
-            [{"sha": "abc", "organization": "acme", "repository": "widget"}]
-        )
+        commits_df = pd.DataFrame([{"sha": "abc", "organization": "acme", "repository": "widget"}])
         resolved_df = pd.DataFrame(
             [{"number": 1, "organization": "acme", "repository": "widget", "contributor": "alice"}]
         )
         return commits_df, resolved_df
 
-    monkeypatch.setattr(
-        "dse_oss_reports.cli.fetch_commits_and_resolved", fake_fetch_combined
-    )
+    monkeypatch.setattr("dse_oss_reports.cli.fetch_commits_and_resolved", fake_fetch_combined)
 
     paths = run_commits_report(
         token="fake-token",

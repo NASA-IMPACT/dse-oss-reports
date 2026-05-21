@@ -39,9 +39,7 @@ def _render_caveats(ax, lines: list[str]) -> None:
         horizontalalignment="right",
         verticalalignment="top",
         transform=ax.transAxes,
-        bbox=dict(
-            boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8
-        ),
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8),
     )
 
 
@@ -309,16 +307,12 @@ def plot_combined_counts(
         if not keys:
             ax.barh(i, count, color=_NO_OBJECTIVE_COLOR, edgecolor="black", linewidth=1.0)
         elif len(keys) == 1:
-            ax.barh(
-                i, count, color=obj_colors[keys[0]], edgecolor="black", linewidth=1.0
-            )
+            ax.barh(i, count, color=obj_colors[keys[0]], edgecolor="black", linewidth=1.0)
         else:
             width = count / len(keys)
             x = 0
             for key in keys:
-                ax.barh(
-                    i, width, left=x, color=obj_colors[key], edgecolor="black", linewidth=1.0
-                )
+                ax.barh(i, width, left=x, color=obj_colors[key], edgecolor="black", linewidth=1.0)
                 x += width
 
     ax.set_yticks(range(len(counts)))

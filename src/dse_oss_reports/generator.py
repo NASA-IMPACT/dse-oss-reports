@@ -138,9 +138,7 @@ class ObjectivesGenerator:
                 )
             for pi_key, objs in sorted(objectives_by_pi.items()):
                 repo_count = sum(len(o["repos"]) for o in objs)
-                logger.info(
-                    "  %s: %d objectives, %d repo mappings", pi_key, len(objs), repo_count
-                )
+                logger.info("  %s: %d objectives, %d repo mappings", pi_key, len(objs), repo_count)
             return objectives_by_pi
         finally:
             g.close()
