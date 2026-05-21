@@ -28,12 +28,6 @@ site_url = "nasa-impact.github.io/veda-odd"                   # GitHub Pages URL
 objectives_page_url = "https://nasa-impact.github.io/veda-odd/objectives"
 token_env_var = "GH_ODD_PAT"                                  # legacy fallback for local scripts
 
-[pi_dates]
-"pi-25.4" = ["20250719", "20251018"]
-"pi-26.1" = ["20251019", "20260117"]
-"pi-26.2" = ["20260118", "20260425"]
-"pi-26.3" = ["20260426", "20260711"]
-
 [long_org_name_mapping]   # optional — aliases for `repo:` labels whose org exceeds GH's label length
 cng = "cloudnativegeo"
 
@@ -43,6 +37,13 @@ images_dir = "docs/images"
 images_dir_relative = "images"
 docs_output_path = "docs/objectives.md"
 objectives_data_path = "reports/_objectives_data.json"
+```
+
+The PI calendar (`PI_DATES`) and recognized label set (`_PI_LABELS`) are library-managed — every team inherits them by ref. If a team genuinely needs a non-standard window, add an optional `[pi_dates]` table that overrides individual entries:
+
+```toml
+[pi_dates]
+"pi-26.1" = ["20251015", "20260120"]   # team-specific window; other PIs inherit from the library
 ```
 
 ### Step 2: Add the reusable workflow caller
@@ -126,7 +127,7 @@ Objectives are GitHub Issues with two labels:
 - `pi-{YY}.{Q}-objective` (e.g. `pi-26.2-objective`) — marks the issue as a quarterly objective.
 - `repo:{org}/{repo-name}` — maps the issue to a repository the work touches. One label per repo.
 
-Contributors come from issue assignees. The set of recognized PI labels is library-managed in `dse_oss_reports.generator._PI_LABELS`; opening a PR there is how you onboard a new PI globally.
+Contributors come from issue assignees. The set of recognized PI labels (`dse_oss_reports.generator._PI_LABELS`) and the shared PI calendar (`dse_oss_reports.pi_dates.PI_DATES`) are library-managed; opening a PR there is how you onboard a new PI for every team at once.
 
 Add `.github/ISSUE_TEMPLATE/objective.md` so team members propose objectives consistently:
 
@@ -162,8 +163,9 @@ Merge the PR. The deploy workflow publishes to GitHub Pages.
 ### Quarterly maintenance
 
 1. Update the issue template's `labels:` and `title:` to the new PI.
-2. Add the new PI's window to `[pi_dates]` in `team.toml`.
-3. Create objective issues for the quarter; the next cron run picks them up.
+2. Create objective issues for the quarter; the next cron run picks them up.
+
+The library handles the rest org-wide: when a new PI starts being tracked, open a PR against `dse-oss-reports` adding the entry to `PI_DATES` (in `dse_oss_reports/pi_dates.py`) and `_PI_LABELS` (in `dse_oss_reports/generator.py`), tag a release, and have each team bump their `dse-oss-reports-ref`.
 
 ## CLI reference
 
@@ -225,7 +227,7 @@ dependencies = [
 |---|---|
 | `generate-config` finds no issues | Check `pi-*-objective` labels and that the PI label is in `dse_oss_reports.generator._PI_LABELS` |
 | `FileNotFoundError: _objectives_data.json` | Run `generate-config` first, or use `run-all` |
-| Chart is empty | Check the per-PI CSV in `reports/output/`; verify the PI's window in `[pi_dates]` |
+| Chart is empty | Check the per-PI CSV in `reports/output/`; verify the PI's window in the library's `PI_DATES` (or your `[pi_dates]` override, if any) |
 | PR not created by Actions | Confirm the calling workflow's job has `contents: write` and `pull-requests: write` |
 | MkDocs build fails | Run `uv run mkdocs build --strict` locally to see errors |
 
