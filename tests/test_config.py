@@ -59,7 +59,7 @@ def test_load_config_paths_use_documented_defaults_when_table_absent():
     assert config.paths.images_dir == Path("docs/images")
     assert config.paths.images_dir_relative == "images"
     assert config.paths.docs_output_path == Path("docs/objectives.md")
-    assert config.paths.objectives_data_path == Path("reports/_objectives_data.py")
+    assert config.paths.objectives_data_path == Path("reports/_objectives_data.json")
 
 
 def test_load_config_paths_override_via_table(tmp_path):

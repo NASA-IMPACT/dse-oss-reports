@@ -1,5 +1,6 @@
 """Scrape `pi-X.Y-objective` labelled issues from a planning repo into an OBJECTIVES dict."""
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -69,6 +70,20 @@ def _render_data_module(objectives: ObjectivesDict) -> str:
     lines.append("}")
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_data_json(objectives: ObjectivesDict) -> str:
+    """Render an ObjectivesDict as JSON, sorted to match ``_render_data_module``'s ordering.
+
+    Tuples (contributors, repos) become JSON arrays and round-trip back as lists; the
+    library iterates these with unpacking patterns that work for either type, so callers
+    don't need to convert. JSON is preferred over the Python source format because loading
+    it doesn't execute arbitrary code — anyone with merge access to the consuming repo
+    could otherwise inject Python via ``_objectives_data.py``.
+    """
+    sorted_pis = sorted(objectives.keys(), key=lambda x: float(x.split("-")[1]))
+    ordered = {pi: sorted(objectives[pi], key=lambda x: x["issue_number"]) for pi in sorted_pis}
+    return json.dumps(ordered, indent=2) + "\n"
 
 
 class ObjectivesGenerator:
@@ -144,12 +159,22 @@ class ObjectivesGenerator:
             g.close()
 
     def write_data_module(self, path: Path) -> Path:
-        """Render the fetched OBJECTIVES dict as a Python source file at ``path``.
+        """Render the fetched OBJECTIVES dict to ``path``, picking format by extension.
 
-        The file is intended to be committed to the consuming repo as
-        ``reports/_objectives_data.py``. Returns ``path`` for chaining.
+        - ``.json`` (preferred): plain data, loaded via ``json.load`` — no code execution.
+        - ``.py`` (legacy): Python source assigning ``OBJECTIVES = {...}``, retained for
+          existing wrapper-script consumers whose ``objectives.py`` re-export imports it.
+
+        Raises ``ValueError`` for any other extension. Returns ``path`` for chaining.
         """
         objectives = self.fetch()
-        path.write_text(_render_data_module(objectives))
+        if path.suffix == ".json":
+            path.write_text(_render_data_json(objectives))
+        elif path.suffix == ".py":
+            path.write_text(_render_data_module(objectives))
+        else:
+            raise ValueError(
+                f"Unsupported objectives data extension {path.suffix!r}; expected .json or .py"
+            )
         logger.info("Wrote %d PIs to %s", len(objectives), path)
         return path

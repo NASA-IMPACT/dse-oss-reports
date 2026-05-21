@@ -16,7 +16,7 @@ class Paths:
     images_dir: Path = Path("docs/images")
     images_dir_relative: str = "images"
     docs_output_path: Path = Path("docs/objectives.md")
-    objectives_data_path: Path = Path("reports/_objectives_data.py")
+    objectives_data_path: Path = Path("reports/_objectives_data.json")
 
 
 @dataclass(frozen=True)

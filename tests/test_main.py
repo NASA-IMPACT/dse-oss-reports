@@ -3,7 +3,9 @@
 import subprocess
 from pathlib import Path
 
-from dse_oss_reports.main import main
+import pytest
+
+from dse_oss_reports.main import _load_objectives, main
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_team.toml"
 
@@ -32,7 +34,7 @@ def test_generate_config_invokes_run_generate_config_with_resolved_token(monkeyp
         captured["mapping"] = long_org_name_mapping
         captured["output_path"] = output_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("OBJECTIVES = {}\n")
+        output_path.write_text("{}\n")
         return output_path
 
     monkeypatch.setattr("dse_oss_reports.main.run_generate_config", fake_run)
@@ -47,7 +49,7 @@ def test_generate_config_invokes_run_generate_config_with_resolved_token(monkeyp
     assert code == 0
     assert captured["token"] == "ci-token-value"
     assert captured["settings"].team_name == "ODD"
-    assert captured["output_path"] == Path("reports/_objectives_data.py")
+    assert captured["output_path"] == Path("reports/_objectives_data.json")
 
 
 def test_token_resolution_falls_back_to_team_token_env_var(monkeypatch, tmp_path):
@@ -57,7 +59,7 @@ def test_token_resolution_falls_back_to_team_token_env_var(monkeypatch, tmp_path
     def fake_run(token, settings, *, long_org_name_mapping, output_path):
         captured["token"] = token
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("OBJECTIVES = {}\n")
+        output_path.write_text("{}\n")
         return output_path
 
     monkeypatch.setattr("dse_oss_reports.main.run_generate_config", fake_run)
@@ -99,9 +101,9 @@ def test_fetch_invokes_run_commits_report_with_loaded_objectives(monkeypatch, tm
     config_path = tmp_path / "team.toml"
     config_path.write_text(FIXTURE.read_text())
     (tmp_path / "reports").mkdir()
-    (tmp_path / "reports" / "_objectives_data.py").write_text(
-        'OBJECTIVES = {"pi-26.2": [{"issue_number": 1, "title": "x", "state": "open", '
-        '"state_reason": None, "contributors": [], "repos": []}]}\n'
+    (tmp_path / "reports" / "_objectives_data.json").write_text(
+        '{"pi-26.2": [{"issue_number": 1, "title": "x", "state": "open", '
+        '"state_reason": null, "contributors": [], "repos": []}]}\n'
     )
 
     code = main(["--config", str(config_path), "fetch", "--pi", "pi-26.2"])
@@ -131,7 +133,7 @@ def test_plot_invokes_run_plot_report_with_config_paths(monkeypatch, tmp_path):
     config_path = tmp_path / "team.toml"
     config_path.write_text(FIXTURE.read_text())
     (tmp_path / "reports").mkdir()
-    (tmp_path / "reports" / "_objectives_data.py").write_text("OBJECTIVES = {}\n")
+    (tmp_path / "reports" / "_objectives_data.json").write_text("{}\n")
 
     code = main(["--config", str(config_path), "plot", "--pi", "pi-26.2"])
 
@@ -160,7 +162,7 @@ def test_generate_docs_invokes_run_generate_docs_with_config_paths(monkeypatch, 
     config_path = tmp_path / "team.toml"
     config_path.write_text(FIXTURE.read_text())
     (tmp_path / "reports").mkdir()
-    (tmp_path / "reports" / "_objectives_data.py").write_text("OBJECTIVES = {}\n")
+    (tmp_path / "reports" / "_objectives_data.json").write_text("{}\n")
 
     code = main(["--config", str(config_path), "generate-docs"])
 
@@ -176,7 +178,7 @@ def test_run_all_runs_four_subcommands_in_order(monkeypatch, tmp_path):
     def fake_gen_config(token, settings, *, long_org_name_mapping, output_path):
         calls.append("generate-config")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("OBJECTIVES = {}\n")
+        output_path.write_text("{}\n")
         return output_path
 
     def make_fake(name):
@@ -200,6 +202,38 @@ def test_run_all_runs_four_subcommands_in_order(monkeypatch, tmp_path):
 
     assert code == 0
     assert calls == ["generate-config", "fetch", "plot", "generate-docs"]
+
+
+def test_load_objectives_reads_json_file(tmp_path):
+    """_load_objectives dispatches to json.load for .json paths — no code execution."""
+    path = tmp_path / "data.json"
+    path.write_text(
+        '{"pi-26.2": [{"issue_number": 1, "title": "x", "state": "open", '
+        '"state_reason": null, "contributors": [], "repos": []}]}'
+    )
+    result = _load_objectives(path)
+
+    assert "pi-26.2" in result
+    assert result["pi-26.2"][0]["issue_number"] == 1
+
+
+def test_load_objectives_reads_py_file_for_back_compat(tmp_path):
+    """_load_objectives still loads legacy .py modules so wrapper-script consumers work."""
+    path = tmp_path / "data.py"
+    path.write_text(
+        'OBJECTIVES = {"pi-26.2": [{"issue_number": 7, "title": "y", "state": "open", '
+        '"state_reason": None, "contributors": [], "repos": []}]}\n'
+    )
+    result = _load_objectives(path)
+
+    assert result["pi-26.2"][0]["issue_number"] == 7
+
+
+def test_load_objectives_rejects_unsupported_extension(tmp_path):
+    path = tmp_path / "data.yaml"
+    path.write_text("foo: bar\n")
+    with pytest.raises(ValueError, match=r"\.json or \.py"):
+        _load_objectives(path)
 
 
 def test_console_script_is_installed_and_runs():

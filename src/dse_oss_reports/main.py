@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import json
 import logging
 import os
 import sys
@@ -41,14 +42,29 @@ def _require_token(config: Config) -> str | None:
 
 
 def _load_objectives(path: Path) -> ObjectivesDict:
+    """Load OBJECTIVES from ``path``, picking format by extension.
+
+    ``.json`` (preferred) is loaded with ``json.load`` — no code execution. ``.py`` is
+    loaded via importlib for back-compat with existing wrapper-script consumers, which is
+    inherently RCE-prone: anyone with merge access to the consuming repo can put arbitrary
+    Python in ``_objectives_data.py`` and have it run under the next CI invocation. New
+    consumers should use ``.json`` (the CLI's default in ``Paths.objectives_data_path``).
+    """
     if not path.exists():
         raise FileNotFoundError(f"{path} not found — run `dse-oss-reports generate-config` first")
-    spec = importlib.util.spec_from_file_location("_objectives_data", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load module from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.OBJECTIVES
+    if path.suffix == ".json":
+        with path.open() as f:
+            return json.load(f)
+    if path.suffix == ".py":
+        spec = importlib.util.spec_from_file_location("_objectives_data", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Could not load module from {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.OBJECTIVES
+    raise ValueError(
+        f"Unsupported objectives data extension {path.suffix!r}; expected .json or .py"
+    )
 
 
 def _cmd_current_pi(config: Config, args: argparse.Namespace) -> int:
