@@ -4,7 +4,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dse_oss_reports.pi_dates import PIDates
+from dse_oss_reports.pi_dates import PI_DATES, PIDates
 from dse_oss_reports.settings import TeamSettings
 
 
@@ -24,7 +24,7 @@ class Config:
     """Parsed contents of a team's ``team.toml``."""
 
     team: TeamSettings
-    pi_dates: PIDates = field(default_factory=dict)
+    pi_dates: PIDates = field(default_factory=lambda: dict(PI_DATES))
     paths: Paths = field(default_factory=Paths)
     long_org_name_mapping: dict[str, str] = field(default_factory=dict)
 
@@ -81,7 +81,10 @@ def load_config(path: Path) -> Config:
         objectives_page_url=team_table["objectives_page_url"],
         token_env_var=team_table["token_env_var"],
     )
-    pi_dates: PIDates = {pi: (start, end) for pi, (start, end) in data.get("pi_dates", {}).items()}
+    # Library-managed PI calendar is the default; team.toml can override individual entries
+    # (or replace the whole table) via [pi_dates] when a team needs a different window.
+    pi_dates: PIDates = dict(PI_DATES)
+    pi_dates.update({pi: (start, end) for pi, (start, end) in data.get("pi_dates", {}).items()})
     return Config(
         team=team,
         pi_dates=pi_dates,

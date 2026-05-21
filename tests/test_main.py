@@ -11,12 +11,15 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_team.toml"
 
 
 def test_current_pi_prints_resolved_pi(capsys):
-    """current-pi prints a PI from [pi_dates] (or falls back to most recent)."""
+    """current-pi prints a PI — from the merged [pi_dates] table (library defaults + overrides)."""
+    from dse_oss_reports.pi_dates import PI_DATES
+
     out_code = main(["--config", str(FIXTURE), "current-pi"])
 
     captured = capsys.readouterr()
     assert out_code == 0
-    assert captured.out.strip() in {"pi-26.1", "pi-26.2"}
+    # The exact PI depends on today's date vs the shared library calendar; any defined PI is OK.
+    assert captured.out.strip() in PI_DATES
 
 
 def test_main_returns_nonzero_on_unknown_subcommand():
