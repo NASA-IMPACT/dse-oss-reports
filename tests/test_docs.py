@@ -70,6 +70,46 @@ def test_past_pis_are_collapsed_into_details_blocks(sample_objectives):
     assert "</details>" in md
 
 
+def test_past_pi_section_includes_both_image_links_by_default(sample_objectives):
+    """Past PIs get both commits + resolved-items image links, mirroring current PI."""
+    md = render_objectives_md(sample_objectives, make_settings(), current_pi="pi-26.2")
+    assert "images/pi-26.1-authored-commits.png" in md
+    assert "images/pi-26.1-resolved-issues-prs.png" in md
+
+
+def test_image_links_gated_by_images_dir_when_provided(sample_objectives, tmp_path):
+    """When images_dir is given, only image links for PNGs that exist on disk are emitted."""
+    (tmp_path / "pi-26.2-authored-commits.png").write_bytes(b"")
+    (tmp_path / "pi-26.1-resolved-issues-prs.png").write_bytes(b"")
+    # pi-26.2-resolved-issues-prs.png and pi-26.1-authored-commits.png intentionally missing.
+
+    md = render_objectives_md(
+        sample_objectives,
+        make_settings(),
+        current_pi="pi-26.2",
+        images_dir=tmp_path,
+    )
+
+    assert "pi-26.2-authored-commits.png" in md
+    assert "pi-26.1-resolved-issues-prs.png" in md
+    assert "pi-26.2-resolved-issues-prs.png" not in md
+    assert "pi-26.1-authored-commits.png" not in md
+
+
+def test_images_dir_none_keeps_unconditional_rendering(sample_objectives, tmp_path):
+    """Passing images_dir=None (default) renders all four links regardless of filesystem."""
+    md = render_objectives_md(
+        sample_objectives,
+        make_settings(),
+        current_pi="pi-26.2",
+        images_dir=None,
+    )
+    assert "pi-26.2-authored-commits.png" in md
+    assert "pi-26.2-resolved-issues-prs.png" in md
+    assert "pi-26.1-authored-commits.png" in md
+    assert "pi-26.1-resolved-issues-prs.png" in md
+
+
 def test_configuration_footer_links_to_objectives_data_module(sample_objectives):
     md = render_objectives_md(sample_objectives, make_settings())
     # Footer should reference where objectives data lives so readers can edit it.

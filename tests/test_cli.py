@@ -254,3 +254,24 @@ def test_run_generate_docs_creates_parent_directory_if_missing(sample_objectives
         output_path=out_path,
     )
     assert out_path.is_file()
+
+
+def test_run_generate_docs_omits_image_links_for_missing_files(sample_objectives, tmp_path):
+    """Image links should only appear when the PNG exists in the resolved images dir."""
+    out_path = tmp_path / "objectives.md"
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "pi-26.1-resolved-issues-prs.png").write_bytes(b"")
+    (images_dir / "pi-26.2-authored-commits.png").write_bytes(b"")
+
+    run_generate_docs(
+        settings=make_settings(),
+        objectives=sample_objectives,
+        output_path=out_path,
+    )
+    contents = out_path.read_text()
+
+    assert "pi-26.2-authored-commits.png" in contents
+    assert "pi-26.1-resolved-issues-prs.png" in contents
+    assert "pi-26.2-resolved-issues-prs.png" not in contents
+    assert "pi-26.1-authored-commits.png" not in contents
