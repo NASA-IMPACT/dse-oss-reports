@@ -84,37 +84,91 @@ def test_empty_objectives_renders_just_the_header_without_crashing():
     assert "## Current PI:" not in md
 
 
-def test_past_pi_closed_count_excludes_not_planned():
-    """Past-PI summary "(N objectives, M closed)" must NOT count not-planned items."""
+def _past_pi_objectives(*specs: tuple[str, str | None]) -> list[dict]:
+    """Build a minimal pi-26.1 objectives list from (state, state_reason) tuples."""
+    return [
+        {
+            "issue_number": i,
+            "title": f"o{i}",
+            "state": state,
+            "state_reason": reason,
+            "contributors": [],
+            "repos": [],
+        }
+        for i, (state, reason) in enumerate(specs, start=1)
+    ]
+
+
+def _render_with_past_pi(past_pi_objs: list[dict]) -> str:
+    """Render `objectives.md` with a past pi-26.1 and a trivial current pi-26.2."""
     objectives = {
-        "pi-26.1": [
-            {
-                "issue_number": 1, "title": "Done", "state": "closed",
-                "state_reason": "completed",
-                "contributors": [], "repos": [],
-            },
-            {
-                "issue_number": 2, "title": "Dropped", "state": "closed",
-                "state_reason": "not_planned",
-                "contributors": [], "repos": [],
-            },
-            {
-                "issue_number": 3, "title": "Still open", "state": "open",
-                "state_reason": None,
-                "contributors": [], "repos": [],
-            },
-        ],
+        "pi-26.1": past_pi_objs,
         "pi-26.2": [
             {
-                "issue_number": 10, "title": "Current", "state": "open",
+                "issue_number": 99,
+                "title": "Current",
+                "state": "open",
                 "state_reason": None,
-                "contributors": [], "repos": [],
+                "contributors": [],
+                "repos": [],
             },
         ],
     }
-    md = render_objectives_md(objectives, make_settings(), current_pi="pi-26.2")
-    # 3 objectives in pi-26.1, only 1 truly completed (not the not_planned one).
-    assert "PI 26.1 (3 objectives, 1 closed)" in md
+    return render_objectives_md(objectives, make_settings(), current_pi="pi-26.2")
+
+
+def test_past_pi_summary_renders_total_completed_and_not_planned_counts():
+    """Past-PI <summary> always shows original / completed / not-planned counts."""
+    md = _render_with_past_pi(
+        _past_pi_objectives(
+            ("closed", "completed"),
+            ("closed", "completed"),
+            ("closed", "completed"),
+            ("closed", "completed"),
+            ("closed", "not_planned"),
+            ("closed", "not_planned"),
+            ("closed", "not_planned"),
+        )
+    )
+    assert "PI 26.1 (7 original objectives; 4 closed as completed; 3 closed as not planned)" in md
+
+
+def test_past_pi_summary_appends_still_open_segment_when_some_objectives_are_open():
+    md = _render_with_past_pi(
+        _past_pi_objectives(
+            ("closed", "completed"),
+            ("closed", "not_planned"),
+            ("open", None),
+            ("open", None),
+        )
+    )
+    assert (
+        "PI 26.1 (4 original objectives; 1 closed as completed; "
+        "1 closed as not planned; 2 still open)"
+    ) in md
+
+
+def test_past_pi_summary_treats_legacy_closed_without_state_reason_as_completed():
+    """Pre-``state_reason`` GitHub closed every issue with no reason; count those as completed."""
+    legacy_objectives = [
+        {
+            "issue_number": 1,
+            "title": "old",
+            "state": "closed",
+            "contributors": [],
+            "repos": [],
+        },  # no state_reason key
+        {
+            "issue_number": 2,
+            "title": "newer",
+            "state": "closed",
+            "state_reason": "not_planned",
+            "contributors": [],
+            "repos": [],
+        },
+    ]
+    md = _render_with_past_pi(legacy_objectives)
+    assert "PI 26.1 (2 original objectives; 1 closed as completed; 1 closed as not planned)" in md
 
 
 def test_past_pi_state_column_shows_completion_reason():
@@ -122,31 +176,46 @@ def test_past_pi_state_column_shows_completion_reason():
     objectives = {
         "pi-26.1": [
             {
-                "issue_number": 1, "title": "Done", "state": "closed",
+                "issue_number": 1,
+                "title": "Done",
+                "state": "closed",
                 "state_reason": "completed",
-                "contributors": [], "repos": [],
+                "contributors": [],
+                "repos": [],
             },
             {
-                "issue_number": 2, "title": "Dropped", "state": "closed",
+                "issue_number": 2,
+                "title": "Dropped",
+                "state": "closed",
                 "state_reason": "not_planned",
-                "contributors": [], "repos": [],
+                "contributors": [],
+                "repos": [],
             },
             {
-                "issue_number": 3, "title": "Still open", "state": "open",
+                "issue_number": 3,
+                "title": "Still open",
+                "state": "open",
                 "state_reason": None,
-                "contributors": [], "repos": [],
+                "contributors": [],
+                "repos": [],
             },
             {
-                "issue_number": 4, "title": "Old issue, no reason", "state": "closed",
+                "issue_number": 4,
+                "title": "Old issue, no reason",
+                "state": "closed",
                 # no state_reason key at all — simulates legacy data module
-                "contributors": [], "repos": [],
+                "contributors": [],
+                "repos": [],
             },
         ],
         "pi-26.2": [
             {
-                "issue_number": 10, "title": "Current", "state": "open",
+                "issue_number": 10,
+                "title": "Current",
+                "state": "open",
                 "state_reason": None,
-                "contributors": [], "repos": [],
+                "contributors": [],
+                "repos": [],
             },
         ],
     }
