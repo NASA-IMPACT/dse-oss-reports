@@ -9,6 +9,7 @@ dict shaped like::
                 "issue_number": 123,
                 "title": "...",
                 "state": "open" | "closed",
+                "state_reason": "completed" | "not_planned" | "reopened" | None,
                 "contributors": [(name, username), ...],
                 "repos": [(org, repo), ...],
             },
@@ -16,8 +17,11 @@ dict shaped like::
         ],
     }
 
-These helpers take that dict as a parameter — the library does not import
-``_objectives_data`` from any team's repo.
+``state_reason`` mirrors GitHub's ``Issue.state_reason`` and is optional —
+consumers MUST treat a missing key as equivalent to ``None`` so that
+``_objectives_data.py`` files generated before this field was added still
+load. These helpers take that dict as a parameter — the library does not
+import ``_objectives_data`` from any team's repo.
 """
 
 ObjectivesDict = dict[str, list[dict]]
