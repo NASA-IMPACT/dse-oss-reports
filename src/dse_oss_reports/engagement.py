@@ -58,6 +58,7 @@ def _dedupe_engagement(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=_ENGAGEMENT_COLUMNS)
 
     raw = pd.DataFrame(kept, columns=_RAW_KEYS)
+    raw["number"] = raw["number"].astype("Int64")
     group_keys = ["organization", "repository", "number", "contributor"]
 
     # Aggregate kinds separately, then join with the first-occurrence metadata.

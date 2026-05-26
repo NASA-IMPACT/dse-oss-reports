@@ -67,3 +67,8 @@ def test_dedupe_empty():
     df = _dedupe_engagement([])
     assert df.empty
     assert list(df.columns) == _ENGAGEMENT_COLUMNS
+
+
+def test_dedupe_single_kind_has_no_comma():
+    df = _dedupe_engagement([_raw(kind="review")])
+    assert df.iloc[0]["engagement_kinds"] == "review"
