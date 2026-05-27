@@ -167,3 +167,97 @@ def test_reviews_and_opened_filters_to_tasks():
     review_row = next(r for r in rows if r["kind"] == "review")
     assert review_row["author"] == "carol"
     assert review_row["type"] == "PullRequest"
+
+
+def test_reviews_and_opened_paginates_without_duplicating():
+    # Reviews span two pages; issues fit on one page. The issue must appear once.
+    page1 = {
+        "user": {
+            "contributionsCollection": {
+                "pullRequestReviewContributions": {
+                    "pageInfo": {"hasNextPage": True, "endCursor": "R1"},
+                    "nodes": [
+                        {
+                            "pullRequest": {
+                                "number": 1,
+                                "title": "a",
+                                "url": "https://github.com/o/r/pull/1",
+                                "author": {"login": "carol"},
+                                "createdAt": "2026-02-01T00:00:00Z",
+                                "updatedAt": "2026-02-02T00:00:00Z",
+                                "repository": {"owner": {"login": "o"}, "name": "r"},
+                            }
+                        }
+                    ],
+                },
+                "issueContributions": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "issue": {
+                                "number": 12,
+                                "title": "i",
+                                "url": "https://github.com/o/r/issues/12",
+                                "author": {"login": "alice"},
+                                "createdAt": "2026-02-03T00:00:00Z",
+                                "updatedAt": "2026-02-03T00:00:00Z",
+                                "repository": {"owner": {"login": "o"}, "name": "r"},
+                            }
+                        }
+                    ],
+                },
+            }
+        }
+    }
+    page2 = {
+        "user": {
+            "contributionsCollection": {
+                "pullRequestReviewContributions": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "pullRequest": {
+                                "number": 2,
+                                "title": "b",
+                                "url": "https://github.com/o/r/pull/2",
+                                "author": {"login": "carol"},
+                                "createdAt": "2026-02-01T00:00:00Z",
+                                "updatedAt": "2026-02-02T00:00:00Z",
+                                "repository": {"owner": {"login": "o"}, "name": "r"},
+                            }
+                        }
+                    ],
+                },
+                "issueContributions": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [],
+                },
+            }
+        }
+    }
+
+    class MultiCallRequester:
+        def __init__(self, pages):
+            self._pages = pages
+            self.calls = 0
+
+        def graphql_query(self, query, variables):
+            payload = self._pages[min(self.calls, len(self._pages) - 1)]
+            self.calls += 1
+            return ({}, {"data": payload})
+
+    class MultiCallGithub:
+        def __init__(self, pages):
+            self.requester = MultiCallRequester(pages)
+
+        def close(self):
+            pass
+
+    g = MultiCallGithub([page1, page2])
+    rows = _fetch_reviews_and_opened_for_contributor(
+        g, [("o", "r", "alice")], "alice", "2026-01-18T00:00:00Z", "2026-04-25T00:00:00Z"
+    )
+    review_numbers = sorted(r["number"] for r in rows if r["kind"] == "review")
+    issue_numbers = [r["number"] for r in rows if r["kind"] == "opened"]
+    assert review_numbers == [1, 2]
+    assert issue_numbers == [12]  # not duplicated despite the extra review page

@@ -108,6 +108,7 @@ def _fetch_reviews_and_opened_for_contributor(
     task_repos = {(org, repo) for org, repo, user in tasks if user == contributor}
     rows: list[dict] = []
     review_cursor = issue_cursor = None
+    review_done = issue_done = False
     try:
         while True:
             data = _graphql(
@@ -125,25 +126,33 @@ def _fetch_reviews_and_opened_for_contributor(
             reviews = cc.get("pullRequestReviewContributions") or {}
             issues = cc.get("issueContributions") or {}
 
-            for node in reviews.get("nodes", []):
-                pr = node["pullRequest"]
-                org = pr["repository"]["owner"]["login"]
-                repo = pr["repository"]["name"]
-                if (org, repo) in task_repos:
-                    rows.append(_node_row(pr, "PullRequest", "review", org, repo, contributor))
+            if not review_done:
+                for node in reviews.get("nodes", []):
+                    pr = node["pullRequest"]
+                    org = pr["repository"]["owner"]["login"]
+                    repo = pr["repository"]["name"]
+                    if (org, repo) in task_repos:
+                        rows.append(_node_row(pr, "PullRequest", "review", org, repo, contributor))
+                r_page = reviews.get("pageInfo", {})
+                if r_page.get("hasNextPage"):
+                    review_cursor = r_page.get("endCursor")
+                else:
+                    review_done = True
 
-            for node in issues.get("nodes", []):
-                issue = node["issue"]
-                org = issue["repository"]["owner"]["login"]
-                repo = issue["repository"]["name"]
-                if (org, repo) in task_repos:
-                    rows.append(_node_row(issue, "Issue", "opened", org, repo, contributor))
+            if not issue_done:
+                for node in issues.get("nodes", []):
+                    issue = node["issue"]
+                    org = issue["repository"]["owner"]["login"]
+                    repo = issue["repository"]["name"]
+                    if (org, repo) in task_repos:
+                        rows.append(_node_row(issue, "Issue", "opened", org, repo, contributor))
+                i_page = issues.get("pageInfo", {})
+                if i_page.get("hasNextPage"):
+                    issue_cursor = i_page.get("endCursor")
+                else:
+                    issue_done = True
 
-            r_page = reviews.get("pageInfo", {})
-            i_page = issues.get("pageInfo", {})
-            review_cursor = r_page.get("endCursor") if r_page.get("hasNextPage") else review_cursor
-            issue_cursor = i_page.get("endCursor") if i_page.get("hasNextPage") else issue_cursor
-            if not (r_page.get("hasNextPage") or i_page.get("hasNextPage")):
+            if review_done and issue_done:
                 break
         return rows
     except Exception:
