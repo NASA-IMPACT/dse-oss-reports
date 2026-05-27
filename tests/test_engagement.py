@@ -4,9 +4,13 @@ Network is avoided: source fetchers are monkeypatched, and the GraphQL/search
 clients are faked with the minimal attribute shape engagement.py touches.
 """
 
+from datetime import datetime
+from types import SimpleNamespace
+
 from dse_oss_reports.engagement import (
     _ENGAGEMENT_COLUMNS,
     _dedupe_engagement,
+    _fetch_comment_threads_for_contributor,
     _fetch_reviews_and_opened_for_contributor,
 )
 
@@ -261,3 +265,50 @@ def test_reviews_and_opened_paginates_without_duplicating():
     issue_numbers = [r["number"] for r in rows if r["kind"] == "opened"]
     assert review_numbers == [1, 2]
     assert issue_numbers == [12]  # not duplicated despite the extra review page
+
+
+def _fake_issue(number, *, is_pr, owner, name, author, title="t"):
+    return SimpleNamespace(
+        number=number,
+        title=title,
+        user=SimpleNamespace(login=author),
+        html_url=f"https://github.com/{owner}/{name}/issues/{number}",
+        created_at=datetime(2026, 2, 1),
+        updated_at=datetime(2026, 2, 2),
+        pull_request=SimpleNamespace() if is_pr else None,
+        repository=SimpleNamespace(owner=SimpleNamespace(login=owner), name=name),
+    )
+
+
+class FakeSearchGithub:
+    def __init__(self, results):
+        self._results = results
+        self.queries = []
+
+    def search_issues(self, query):
+        self.queries.append(query)
+        return list(self._results)
+
+    def close(self):
+        pass
+
+
+def test_comment_threads_filters_to_tasks_and_shapes_rows():
+    results = [
+        _fake_issue(7, is_pr=True, owner="o", name="r", author="carol"),
+        _fake_issue(50, is_pr=False, owner="x", name="y", author="dave"),  # not a task repo
+    ]
+    g = FakeSearchGithub(results)
+    tasks = [("o", "r", "alice")]
+    rows = _fetch_comment_threads_for_contributor(
+        g, tasks, "alice", datetime(2026, 1, 18), datetime(2026, 4, 25)
+    )
+    assert {r["number"] for r in rows} == {7}
+    row = rows[0]
+    assert row["kind"] == "comment"
+    assert row["type"] == "PullRequest"
+    assert row["author"] == "carol"
+    assert row["contributor"] == "alice"
+    # The search query uses commenter: scoped to the repo and the window.
+    assert "commenter:alice" in g.queries[0]
+    assert "repo:o/r" in g.queries[0]

@@ -8,6 +8,7 @@ collapsed); a contributor's own authored PRs are excluded as directed work.
 """
 
 import logging
+from datetime import datetime
 
 import pandas as pd
 from github import Auth, Github
@@ -176,6 +177,55 @@ def _node_row(node: dict, type_: str, kind: str, org: str, repo: str, contributo
         "repository": repo,
         "contributor": contributor,
     }
+
+
+def _fetch_comment_threads_for_contributor(
+    g: Github,
+    tasks: list[Task],
+    contributor: str,
+    time_start: datetime,
+    time_end: datetime,
+) -> list[dict]:
+    """Fetch distinct issues/PRs ``contributor`` commented on, scoped to task repos.
+
+    Uses the ``commenter:`` search qualifier (precise: only comment authorship,
+    unlike the broader ``involves:``). ``updated:`` bounds the window — search has
+    no per-comment date filter, so this is a proxy for "active in the window".
+    """
+    task_repos = {(org, repo) for org, repo, user in tasks if user == contributor}
+    if not task_repos:
+        return []
+    start_str = time_start.strftime("%Y-%m-%d")
+    end_str = time_end.strftime("%Y-%m-%d")
+    repo_filters = " ".join(f"repo:{org}/{repo}" for org, repo in sorted(task_repos))
+    query = f"{repo_filters} commenter:{contributor} updated:{start_str}..{end_str}"
+    try:
+        rows = []
+        for item in g.search_issues(query):
+            org = item.repository.owner.login
+            repo = item.repository.name
+            if (org, repo) not in task_repos:
+                continue
+            is_pr = item.pull_request is not None
+            rows.append(
+                {
+                    "number": item.number,
+                    "title": item.title,
+                    "type": "PullRequest" if is_pr else "Issue",
+                    "url": item.html_url,
+                    "kind": "comment",
+                    "author": item.user.login if item.user else None,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                    "organization": org,
+                    "repository": repo,
+                    "contributor": contributor,
+                }
+            )
+        return rows
+    except Exception:
+        logger.exception("Failed to fetch comment threads for %s", contributor)
+        return []
 
 
 def _dedupe_engagement(rows: list[dict]) -> pd.DataFrame:
