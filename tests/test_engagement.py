@@ -11,6 +11,7 @@ from dse_oss_reports.engagement import (
     _ENGAGEMENT_COLUMNS,
     _dedupe_engagement,
     _fetch_comment_threads_for_contributor,
+    _fetch_discussions_for_repo,
     _fetch_reviews_and_opened_for_contributor,
 )
 
@@ -312,3 +313,65 @@ def test_comment_threads_filters_to_tasks_and_shapes_rows():
     # The search query uses commenter: scoped to the repo and the window.
     assert "commenter:alice" in g.queries[0]
     assert "repo:o/r" in g.queries[0]
+
+
+def _discussions_payload():
+    return {
+        "repository": {
+            "discussions": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "nodes": [
+                    {
+                        "number": 3,
+                        "title": "RFC: layout",
+                        "url": "https://github.com/o/r/discussions/3",
+                        "createdAt": "2026-02-05T00:00:00Z",
+                        "updatedAt": "2026-02-06T00:00:00Z",
+                        "author": {"login": "alice"},
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"author": {"login": "carol"}}],
+                        },
+                    },
+                    {
+                        "number": 4,
+                        "title": "Question",
+                        "url": "https://github.com/o/r/discussions/4",
+                        "createdAt": "2026-02-05T00:00:00Z",
+                        "updatedAt": "2026-02-06T00:00:00Z",
+                        "author": {"login": "stranger"},
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"author": {"login": "bob"}}],
+                        },
+                    },
+                    {
+                        "number": 5,
+                        "title": "Unrelated",
+                        "url": "https://github.com/o/r/discussions/5",
+                        "createdAt": "2026-02-05T00:00:00Z",
+                        "updatedAt": "2026-02-06T00:00:00Z",
+                        "author": {"login": "stranger"},
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"author": {"login": "nobody-tracked"}}],
+                        },
+                    },
+                ],
+            }
+        }
+    }
+
+
+def test_discussions_keeps_tracked_participants():
+    g = FakeGithubGraphQL(_discussions_payload())
+    contributors = {"alice", "bob"}
+    rows = _fetch_discussions_for_repo(
+        g, "o", "r", contributors, "2026-01-18T00:00:00Z", "2026-04-25T00:00:00Z"
+    )
+    # #3 authored by alice, #4 replied to by bob; #5 has no tracked participant.
+    by_contrib = {(r["number"], r["contributor"]) for r in rows}
+    assert (3, "alice") in by_contrib
+    assert (4, "bob") in by_contrib
+    assert 5 not in {r["number"] for r in rows}
+    assert all(r["type"] == "Discussion" and r["kind"] == "discussion" for r in rows)

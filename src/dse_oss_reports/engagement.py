@@ -228,6 +228,85 @@ def _fetch_comment_threads_for_contributor(
         return []
 
 
+_DISCUSSIONS_QUERY = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    discussions(first: 50, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title url createdAt updatedAt
+        author { login }
+        comments(first: 100) {
+          pageInfo { hasNextPage endCursor }
+          nodes { author { login } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _fetch_discussions_for_repo(
+    g: Github,
+    org: str,
+    repo: str,
+    contributors: set[str],
+    iso_from: str,
+    iso_to: str,
+) -> list[dict]:
+    """Fetch discussions in ``org/repo`` a tracked contributor authored or replied to.
+
+    Emits one record per (discussion, tracked participant). ``iso_from``/``iso_to``
+    bound the window on the discussion's ``updatedAt``. Pages discussions to
+    exhaustion; comment pagination beyond the first 100 is not followed (a
+    pragmatic cap — discussions rarely exceed it, and we only need presence of a
+    tracked author).
+    """
+    rows: list[dict] = []
+    cursor = None
+    try:
+        while True:
+            data = _graphql(g, _DISCUSSIONS_QUERY, {"owner": org, "name": repo, "cursor": cursor})
+            disc_conn = ((data.get("repository") or {}).get("discussions")) or {}
+            for node in disc_conn.get("nodes", []):
+                updated = node.get("updatedAt") or ""
+                if not (iso_from <= updated <= iso_to):
+                    continue
+                participants = set()
+                author = (node.get("author") or {}).get("login")
+                if author:
+                    participants.add(author)
+                for c in (node.get("comments") or {}).get("nodes", []):
+                    c_author = (c.get("author") or {}).get("login")
+                    if c_author:
+                        participants.add(c_author)
+                for who in participants & contributors:
+                    rows.append(
+                        {
+                            "number": node["number"],
+                            "title": node["title"],
+                            "type": "Discussion",
+                            "url": node["url"],
+                            "kind": "discussion",
+                            "author": author,
+                            "created_at": node.get("createdAt"),
+                            "updated_at": node.get("updatedAt"),
+                            "organization": org,
+                            "repository": repo,
+                            "contributor": who,
+                        }
+                    )
+            page = disc_conn.get("pageInfo", {})
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+        return rows
+    except Exception:
+        logger.exception("Failed to fetch discussions for %s/%s", org, repo)
+        return []
+
+
 def _dedupe_engagement(rows: list[dict]) -> pd.DataFrame:
     """Collapse raw activity records into one row per distinct (contributor, item).
 
