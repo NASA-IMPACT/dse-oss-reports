@@ -10,6 +10,7 @@ collapsed); a contributor's own authored PRs are excluded as directed work.
 import logging
 
 import pandas as pd
+from github import Auth, Github
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,129 @@ _RAW_KEYS = [
     "repository",
     "contributor",
 ]
+
+
+def _make_client(token: str | None) -> Github:
+    if token:
+        return Github(auth=Auth.Token(token))
+    return Github()
+
+
+def _graphql(g: Github, query: str, variables: dict) -> dict:
+    """Run a GraphQL query via PyGithub's requester; return the ``data`` payload."""
+    _headers, data = g.requester.graphql_query(query, variables)
+    if "errors" in data:
+        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+    return data["data"]
+
+
+_CONTRIB_QUERY = """
+query($login: String!, $from: DateTime!, $to: DateTime!,
+      $reviewCursor: String, $issueCursor: String) {
+  user(login: $login) {
+    contributionsCollection(from: $from, to: $to) {
+      pullRequestReviewContributions(first: 100, after: $reviewCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          pullRequest {
+            number title url
+            author { login }
+            createdAt updatedAt
+            repository { owner { login } name }
+          }
+        }
+      }
+      issueContributions(first: 100, after: $issueCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          issue {
+            number title url
+            author { login }
+            createdAt updatedAt
+            repository { owner { login } name }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _fetch_reviews_and_opened_for_contributor(
+    g: Github,
+    tasks: list[Task],
+    contributor: str,
+    iso_from: str,
+    iso_to: str,
+) -> list[dict]:
+    """Fetch one contributor's PR reviews + opened issues, filtered to ``tasks`` repos.
+
+    ``iso_from``/``iso_to`` are ISO-8601 ``DateTime`` strings (the GraphQL
+    ``contributionsCollection`` window). Paginates both connections to exhaustion.
+    """
+    task_repos = {(org, repo) for org, repo, user in tasks if user == contributor}
+    rows: list[dict] = []
+    review_cursor = issue_cursor = None
+    try:
+        while True:
+            data = _graphql(
+                g,
+                _CONTRIB_QUERY,
+                {
+                    "login": contributor,
+                    "from": iso_from,
+                    "to": iso_to,
+                    "reviewCursor": review_cursor,
+                    "issueCursor": issue_cursor,
+                },
+            )
+            cc = (data.get("user") or {}).get("contributionsCollection") or {}
+            reviews = cc.get("pullRequestReviewContributions") or {}
+            issues = cc.get("issueContributions") or {}
+
+            for node in reviews.get("nodes", []):
+                pr = node["pullRequest"]
+                org = pr["repository"]["owner"]["login"]
+                repo = pr["repository"]["name"]
+                if (org, repo) in task_repos:
+                    rows.append(_node_row(pr, "PullRequest", "review", org, repo, contributor))
+
+            for node in issues.get("nodes", []):
+                issue = node["issue"]
+                org = issue["repository"]["owner"]["login"]
+                repo = issue["repository"]["name"]
+                if (org, repo) in task_repos:
+                    rows.append(_node_row(issue, "Issue", "opened", org, repo, contributor))
+
+            r_page = reviews.get("pageInfo", {})
+            i_page = issues.get("pageInfo", {})
+            review_cursor = r_page.get("endCursor") if r_page.get("hasNextPage") else review_cursor
+            issue_cursor = i_page.get("endCursor") if i_page.get("hasNextPage") else issue_cursor
+            if not (r_page.get("hasNextPage") or i_page.get("hasNextPage")):
+                break
+        return rows
+    except Exception:
+        logger.exception("Failed to fetch reviews/opened for %s", contributor)
+        return []
+
+
+def _node_row(node: dict, type_: str, kind: str, org: str, repo: str, contributor: str) -> dict:
+    """Shape a GraphQL issue/PR node into a raw engagement record."""
+    author = (node.get("author") or {}).get("login")
+    return {
+        "number": node["number"],
+        "title": node["title"],
+        "type": type_,
+        "url": node["url"],
+        "kind": kind,
+        "author": author,
+        "created_at": node.get("createdAt"),
+        "updated_at": node.get("updatedAt"),
+        "organization": org,
+        "repository": repo,
+        "contributor": contributor,
+    }
 
 
 def _dedupe_engagement(rows: list[dict]) -> pd.DataFrame:
