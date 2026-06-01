@@ -13,6 +13,7 @@ import pandas as pd
 from dse_oss_reports import TeamSettings
 from dse_oss_reports.cli import (
     run_commits_report,
+    run_engagement_report,
     run_generate_config,
     run_generate_docs,
     run_plot_report,
@@ -110,6 +111,48 @@ def test_run_commits_report_defaults_pi_to_current(
 
 
 # ---------------------------------------------------------------------------
+# run_engagement_report
+# ---------------------------------------------------------------------------
+
+
+def test_run_engagement_report_writes_csv(
+    monkeypatch, sample_objectives, sample_pi_dates, tmp_path
+):
+    def fake_fetch_engagement(token, tasks, contributors, time_start, time_end, *, max_workers):
+        return pd.DataFrame(
+            [
+                {
+                    "number": 7,
+                    "title": "t",
+                    "type": "PullRequest",
+                    "url": "u",
+                    "engagement_kinds": "review",
+                    "created_at": None,
+                    "updated_at": None,
+                    "organization": "acme",
+                    "repository": "gizmo",
+                    "contributor": "alice",
+                }
+            ]
+        )
+
+    monkeypatch.setattr("dse_oss_reports.cli.fetch_engagement", fake_fetch_engagement)
+
+    paths = run_engagement_report(
+        token="fake-token",
+        settings=make_settings(),
+        pi_dates=sample_pi_dates,
+        objectives=sample_objectives,
+        pi="pi-26.2",
+        output_dir=tmp_path,
+    )
+    out = paths["engagement"]
+    assert out == tmp_path / "pi-26.2-engagement.csv"
+    assert out.is_file()
+    assert "engagement_kinds" in out.read_text().splitlines()[0]
+
+
+# ---------------------------------------------------------------------------
 # run_plot_report
 # ---------------------------------------------------------------------------
 
@@ -137,6 +180,7 @@ def test_run_plot_report_calls_plot_counts_for_both_csvs(
     # (Our fake doesn't actually read them; this is just for realism.)
     (csv_dir / "pi-26.2-authored-commits.csv").write_text("sha\n")
     (csv_dir / "pi-26.2-resolved-issues-prs.csv").write_text("number\n")
+    (csv_dir / "pi-26.2-engagement.csv").write_text("engagement_kinds\n")
 
     paths = run_plot_report(
         settings=make_settings(),
@@ -147,15 +191,16 @@ def test_run_plot_report_calls_plot_counts_for_both_csvs(
         images_dir=images_dir,
     )
 
-    # Two PNGs returned
-    assert len(paths) == 2
+    # Three PNGs returned
+    assert len(paths) == 3
     assert {p.name for p in paths} == {
         "pi-26.2-authored-commits.png",
         "pi-26.2-resolved-issues-prs.png",
+        "pi-26.2-engagement.png",
     }
 
     # plot_counts called once for each CSV with distinct titles
-    assert len(calls) == 2
+    assert len(calls) == 3
     titles = {c["title"] for c in calls}
     x_labels = {c["x_label"] for c in calls}
     assert any("commits" in t.lower() for t in titles)
@@ -172,8 +217,8 @@ def test_run_plot_report_drops_paths_for_empty_or_missing_csvs(
     # plot_counts returns None when its CSV is missing/empty — orchestrator should
     # exclude those from the returned list.
     def fake_plot_counts(csv_path, *args, output_path, **kwargs):
-        if "resolved" in csv_path.name:
-            return None  # simulate empty resolved CSV
+        if "resolved" in csv_path.name or "engagement" in csv_path.name:
+            return None  # simulate empty resolved/engagement CSV
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\x89PNG fake")
         return output_path
@@ -190,6 +235,34 @@ def test_run_plot_report_drops_paths_for_empty_or_missing_csvs(
     )
     assert len(paths) == 1
     assert paths[0].name == "pi-26.2-authored-commits.png"
+
+
+def test_run_plot_report_includes_engagement_chart(
+    monkeypatch, sample_objectives, sample_pi_dates, tmp_path
+):
+    def fake_plot_counts(csv_path, *args, output_path, **kwargs):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"\x89PNG fake")
+        return output_path
+
+    monkeypatch.setattr("dse_oss_reports.cli.plot_counts", fake_plot_counts)
+
+    csv_dir = tmp_path / "csvs"
+    images_dir = tmp_path / "images"
+    csv_dir.mkdir()
+    (csv_dir / "pi-26.2-authored-commits.csv").write_text("sha\n")
+    (csv_dir / "pi-26.2-resolved-issues-prs.csv").write_text("number\n")
+    (csv_dir / "pi-26.2-engagement.csv").write_text("engagement_kinds\n")
+
+    produced = run_plot_report(
+        settings=make_settings(),
+        objectives=sample_objectives,
+        pi_dates=sample_pi_dates,
+        pi="pi-26.2",
+        csv_dir=csv_dir,
+        images_dir=images_dir,
+    )
+    assert images_dir / "pi-26.2-engagement.png" in produced
 
 
 # ---------------------------------------------------------------------------

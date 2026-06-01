@@ -127,6 +127,7 @@ def render_objectives_md(
     for suffix, alt in (
         ("authored-commits", "authored commits"),
         ("resolved-issues-prs", "resolved issues and PRs"),
+        ("engagement", "foundational engagement"),
     ):
         line = _image_line(current_pi, suffix, alt, images_dir_relative, images_dir)
         if line is not None:
@@ -170,6 +171,7 @@ def render_objectives_md(
             for suffix, alt in (
                 ("authored-commits", "authored commits"),
                 ("resolved-issues-prs", "resolved issues and PRs"),
+                ("engagement", "foundational engagement"),
             ):
                 line = _image_line(pi, suffix, alt, images_dir_relative, images_dir)
                 if line is not None:

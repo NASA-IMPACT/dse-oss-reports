@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dse_oss_reports.cli import (
     run_commits_report,
+    run_engagement_report,
     run_generate_config,
     run_generate_docs,
     run_plot_report,
@@ -97,6 +98,15 @@ def _cmd_fetch(config: Config, args: argparse.Namespace) -> int:
         return 1
     objectives = _load_objectives(config.paths.objectives_data_path)
     run_commits_report(
+        token,
+        config.team,
+        config.pi_dates,
+        objectives,
+        pi=args.pi,
+        max_workers=args.max_workers,
+        output_dir=config.paths.output_dir,
+    )
+    run_engagement_report(
         token,
         config.team,
         config.pi_dates,
