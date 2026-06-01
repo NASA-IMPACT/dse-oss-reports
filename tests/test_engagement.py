@@ -7,12 +7,14 @@ clients are faked with the minimal attribute shape engagement.py touches.
 from datetime import datetime
 from types import SimpleNamespace
 
+import dse_oss_reports.engagement as eng
 from dse_oss_reports.engagement import (
     _ENGAGEMENT_COLUMNS,
     _dedupe_engagement,
     _fetch_comment_threads_for_contributor,
     _fetch_discussions_for_repo,
     _fetch_reviews_and_opened_for_contributor,
+    fetch_engagement,
 )
 
 
@@ -375,3 +377,37 @@ def test_discussions_keeps_tracked_participants():
     assert (4, "bob") in by_contrib
     assert 5 not in {r["number"] for r in rows}
     assert all(r["type"] == "Discussion" and r["kind"] == "discussion" for r in rows)
+
+
+def test_fetch_engagement_merges_and_dedupes(monkeypatch):
+    # Same PR #7 appears as both a review and a comment by alice -> one row, kinds merged.
+    def fake_reviews(g, tasks, contributor, iso_from, iso_to):
+        return [_raw(number=7, kind="review", contributor=contributor, author="carol")]
+
+    def fake_comments(g, tasks, contributor, ts, te):
+        return [_raw(number=7, kind="comment", contributor=contributor, author="carol")]
+
+    def fake_discussions(g, org, repo, contributors, iso_from, iso_to):
+        return [
+            _raw(
+                number=3,
+                type="Discussion",
+                kind="discussion",
+                url="https://github.com/o/r/discussions/3",
+                contributor="alice",
+                author="alice",
+            )
+        ]
+
+    monkeypatch.setattr(eng, "_make_client", lambda token: FakeGithubGraphQL({}))
+    monkeypatch.setattr(eng, "_fetch_reviews_and_opened_for_contributor", fake_reviews)
+    monkeypatch.setattr(eng, "_fetch_comment_threads_for_contributor", fake_comments)
+    monkeypatch.setattr(eng, "_fetch_discussions_for_repo", fake_discussions)
+
+    tasks = [("o", "r", "alice")]
+    contributors = [("Alice", "alice")]
+    df = fetch_engagement("tok", tasks, contributors, datetime(2026, 1, 18), datetime(2026, 4, 25))
+    assert list(df.columns) == _ENGAGEMENT_COLUMNS
+    pr_row = df[df["number"] == 7].iloc[0]
+    assert pr_row["engagement_kinds"] == "comment,review"
+    assert set(df["number"]) == {7, 3}

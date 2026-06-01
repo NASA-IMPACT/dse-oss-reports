@@ -98,6 +98,10 @@ def test_fetch_invokes_run_commits_report_with_loaded_objectives(monkeypatch, tm
         }
 
     monkeypatch.setattr("dse_oss_reports.main.run_commits_report", fake_run)
+    monkeypatch.setattr(
+        "dse_oss_reports.main.run_engagement_report",
+        lambda *a, **kw: {"engagement": Path("x")},
+    )
     monkeypatch.setenv("DSE_OSS_REPORTS_TOKEN", "ci-token")
     monkeypatch.chdir(tmp_path)
 
@@ -115,6 +119,40 @@ def test_fetch_invokes_run_commits_report_with_loaded_objectives(monkeypatch, tm
     assert captured["pi"] == "pi-26.2"
     assert "pi-26.2" in captured["pi_dates_keys"]
     assert "pi-26.2" in captured["objectives"]
+    assert captured["output_dir"] == Path("reports/output")
+
+
+def test_fetch_also_invokes_run_engagement_report(monkeypatch, tmp_path):
+    """fetch calls run_engagement_report alongside run_commits_report."""
+    captured: dict = {}
+
+    def fake_commits(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {"commits": output_dir / f"{pi}-authored-commits.csv"}
+
+    def fake_engagement(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir):
+        captured["pi"] = pi
+        captured["output_dir"] = output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {"engagement": output_dir / f"{pi}-engagement.csv"}
+
+    monkeypatch.setattr("dse_oss_reports.main.run_commits_report", fake_commits)
+    monkeypatch.setattr("dse_oss_reports.main.run_engagement_report", fake_engagement)
+    monkeypatch.setenv("DSE_OSS_REPORTS_TOKEN", "ci-token")
+    monkeypatch.chdir(tmp_path)
+
+    config_path = tmp_path / "team.toml"
+    config_path.write_text(FIXTURE.read_text())
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "reports" / "_objectives_data.json").write_text(
+        '{"pi-26.2": [{"issue_number": 1, "title": "x", "state": "open", '
+        '"state_reason": null, "contributors": [], "repos": []}]}\n'
+    )
+
+    code = main(["--config", str(config_path), "fetch", "--pi", "pi-26.2"])
+
+    assert code == 0
+    assert captured["pi"] == "pi-26.2"
     assert captured["output_dir"] == Path("reports/output")
 
 
@@ -193,6 +231,7 @@ def test_run_all_runs_four_subcommands_in_order(monkeypatch, tmp_path):
 
     monkeypatch.setattr("dse_oss_reports.main.run_generate_config", fake_gen_config)
     monkeypatch.setattr("dse_oss_reports.main.run_commits_report", make_fake("fetch"))
+    monkeypatch.setattr("dse_oss_reports.main.run_engagement_report", lambda *a, **kw: None)
     monkeypatch.setattr("dse_oss_reports.main.run_plot_report", make_fake("plot"))
     monkeypatch.setattr("dse_oss_reports.main.run_generate_docs", make_fake("generate-docs"))
     monkeypatch.setenv("DSE_OSS_REPORTS_TOKEN", "ci-token")

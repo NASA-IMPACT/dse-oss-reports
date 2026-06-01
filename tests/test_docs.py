@@ -44,6 +44,12 @@ def test_current_pi_section_includes_both_image_links(sample_objectives):
     assert "images/pi-26.2-resolved-issues-prs.png" in md
 
 
+def test_engagement_chart_embedded_for_current_pi(sample_objectives):
+    md = render_objectives_md(sample_objectives, make_settings(), current_pi="pi-26.2")
+    assert "images/pi-26.2-engagement.png" in md
+    assert "foundational engagement" in md
+
+
 def test_image_dir_can_be_overridden(sample_objectives):
     md = render_objectives_md(
         sample_objectives, make_settings(), current_pi="pi-26.2", images_dir_relative="figures"

@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dse_oss_reports.docs import render_objectives_md
+from dse_oss_reports.engagement import fetch_engagement
 from dse_oss_reports.generator import ObjectivesGenerator
 from dse_oss_reports.objectives import (
     ObjectivesDict,
@@ -89,6 +90,49 @@ def run_commits_report(
     return {"commits": commits_path, "resolved": resolved_path}
 
 
+def run_engagement_report(
+    token: str | None,
+    settings: TeamSettings,
+    pi_dates: PIDates,
+    objectives: ObjectivesDict,
+    *,
+    pi: str | None = None,
+    max_workers: int = 10,
+    output_dir: Path = Path("output"),
+) -> dict[str, Path]:
+    """Fetch foundational engagement for one PI and write ``{pi}-engagement.csv``.
+
+    Resolves ``pi`` and its window from ``pi_dates``, derives tasks/contributors
+    from ``objectives`` (same source as the commits report), runs
+    ``fetch_engagement``, and writes the CSV. Returns ``{"engagement": path}``.
+    """
+    pi = _resolve_pi(pi_dates, pi)
+    start_str, end_str = get_time_range(pi_dates, pi)
+    time_start = datetime.strptime(start_str, "%Y%m%d")
+    time_end = datetime.strptime(end_str, "%Y%m%d")
+
+    tasks = get_repos_x_contributors_for_pi(objectives, pi)
+    contributors = get_contributors_for_pi(objectives, pi)
+
+    logger.info(
+        "Running engagement report for %s (%s to %s): %d tasks, %d contributors",
+        pi,
+        start_str,
+        end_str,
+        len(tasks),
+        len(contributors),
+    )
+
+    engagement_df = fetch_engagement(
+        token, tasks, contributors, time_start, time_end, max_workers=max_workers
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    engagement_path = output_dir / f"{pi}-engagement.csv"
+    engagement_df.to_csv(engagement_path, index=False)
+    return {"engagement": engagement_path}
+
+
 def run_plot_report(
     settings: TeamSettings,
     objectives: ObjectivesDict,
@@ -123,6 +167,12 @@ def run_plot_report(
             images_dir / f"{pi}-resolved-issues-prs.png",
             "resolved issues and PRs",
             "Count",
+        ),
+        (
+            csv_dir / f"{pi}-engagement.csv",
+            images_dir / f"{pi}-engagement.png",
+            "foundational engagement (reviews, comments, discussions)",
+            "Distinct items engaged",
         ),
     ]
 

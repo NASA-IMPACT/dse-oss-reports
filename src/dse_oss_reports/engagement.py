@@ -8,6 +8,7 @@ collapsed); a contributor's own authored PRs are excluded as directed work.
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
@@ -335,3 +336,77 @@ def _dedupe_engagement(rows: list[dict]) -> pd.DataFrame:
     ]
     collapsed = kinds_agg.merge(first_meta, on=group_keys, how="left")
     return collapsed[_ENGAGEMENT_COLUMNS].sort_values(by=group_keys).reset_index(drop=True)
+
+
+def fetch_engagement(
+    token: str | None,
+    tasks: list[Task],
+    contributors: list[Contributor],
+    time_start: datetime,
+    time_end: datetime,
+    *,
+    max_workers: int = 10,
+) -> pd.DataFrame:
+    """Fetch foundational engagement (reviews, comments, discussions, opened issues).
+
+    Runs three source fetchers across a shared thread pool: per-contributor
+    reviews/opened-issues (GraphQL) and comment threads (search), plus per-repo
+    discussions (GraphQL). Merges all raw records and de-dupes to one row per
+    distinct ``(contributor, item)`` via :func:`_dedupe_engagement`. Returns a
+    DataFrame with columns ``number, title, type, url, engagement_kinds,
+    created_at, updated_at, organization, repository, contributor``.
+    """
+    iso_from = time_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    iso_to = time_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    tracked = {username for _name, username in contributors}
+    repos = sorted({(org, repo) for org, repo, _user in tasks})
+
+    def run_reviews(contributor: str) -> list[dict]:
+        g = _make_client(token)
+        try:
+            return _fetch_reviews_and_opened_for_contributor(
+                g, tasks, contributor, iso_from, iso_to
+            )
+        finally:
+            g.close()
+
+    def run_comments(contributor: str) -> list[dict]:
+        g = _make_client(token)
+        try:
+            return _fetch_comment_threads_for_contributor(
+                g, tasks, contributor, time_start, time_end
+            )
+        finally:
+            g.close()
+
+    def run_discussions(org_repo: tuple[str, str]) -> list[dict]:
+        org, repo = org_repo
+        g = _make_client(token)
+        try:
+            return _fetch_discussions_for_repo(g, org, repo, tracked, iso_from, iso_to)
+        finally:
+            g.close()
+
+    total = 2 * len(contributors) + len(repos)
+    logger.info(
+        "Fetching engagement: %d contributors x2 + %d repos in shared pool (max_workers=%d)...",
+        len(contributors),
+        len(repos),
+        max_workers,
+    )
+    raw: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for _name, username in contributors:
+            futures.append(executor.submit(run_reviews, username))
+            futures.append(executor.submit(run_comments, username))
+        for org_repo in repos:
+            futures.append(executor.submit(run_discussions, org_repo))
+        for i, future in enumerate(as_completed(futures), 1):
+            raw.extend(future.result())
+            if i % 25 == 0 or i == total:
+                logger.info("  engagement progress: %d/%d", i, total)
+
+    df = _dedupe_engagement(raw)
+    logger.info("Found %d distinct engagement items (after dedupe)", len(df))
+    return df
