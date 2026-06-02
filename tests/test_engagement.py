@@ -290,6 +290,12 @@ class FakeSearchGithub:
 
     def search_issues(self, query):
         self.queries.append(query)
+        # GitHub requires is:issue / is:pull-request; mirror that by returning
+        # only the matching kind so the two queries stay mutually exclusive.
+        if "is:issue" in query:
+            return [r for r in self._results if r.pull_request is None]
+        if "is:pr" in query:
+            return [r for r in self._results if r.pull_request is not None]
         return list(self._results)
 
     def close(self):
@@ -312,9 +318,12 @@ def test_comment_threads_filters_to_tasks_and_shapes_rows():
     assert row["type"] == "PullRequest"
     assert row["author"] == "carol"
     assert row["contributor"] == "alice"
-    # The search query uses commenter: scoped to the repo and the window.
-    assert "commenter:alice" in g.queries[0]
-    assert "repo:o/r" in g.queries[0]
+    # The search runs separate is:issue / is:pull-request queries (GitHub now
+    # rejects queries lacking that qualifier), scoped to the repo and window.
+    assert any("is:issue" in q for q in g.queries)
+    assert any("is:pr" in q for q in g.queries)
+    assert all("commenter:alice" in q for q in g.queries)
+    assert all("repo:o/r" in q for q in g.queries)
 
 
 def _discussions_payload():

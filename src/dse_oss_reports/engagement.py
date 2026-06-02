@@ -7,6 +7,7 @@ participating in a discussion. Each item is counted once per contributor (kinds
 collapsed); a contributor's own authored PRs are excluded as directed work.
 """
 
+import itertools
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -199,10 +200,16 @@ def _fetch_comment_threads_for_contributor(
     start_str = time_start.strftime("%Y-%m-%d")
     end_str = time_end.strftime("%Y-%m-%d")
     repo_filters = " ".join(f"repo:{org}/{repo}" for org, repo in sorted(task_repos))
-    query = f"{repo_filters} commenter:{contributor} updated:{start_str}..{end_str}"
+    base_query = f"{repo_filters} commenter:{contributor} updated:{start_str}..{end_str}"
+    # GitHub's issues/PRs search now requires queries to specify ``is:issue`` or
+    # ``is:pull-request``; without it the API returns 422. Run both and merge.
     try:
         rows = []
-        for item in g.search_issues(query):
+        items = itertools.chain(
+            g.search_issues(f"is:issue {base_query}"),
+            g.search_issues(f"is:pr {base_query}"),
+        )
+        for item in items:
             org = item.repository.owner.login
             repo = item.repository.name
             if (org, repo) not in task_repos:
