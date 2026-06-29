@@ -1,468 +1,262 @@
-"""Tests for queries.fetch_commits and fetch_resolved.
+"""Tests for the async commits + resolved fetchers and the sync DataFrame wrapper.
 
-The real ``github.Github`` client is mocked at the module level via monkeypatch
-so the tests don't hit the network. The fake classes mimic just the attribute
-shape PyGithub exposes for the calls we make — anything not used here is omitted.
+GitHub I/O is faked with ``httpx.MockTransport``; coroutines run via ``asyncio.run``
+inside plain sync tests (no pytest-asyncio).
 """
 
+import json
 from datetime import datetime
-from types import SimpleNamespace
 
+import httpx
+import pytest
+
+from dse_oss_reports import queries
+from dse_oss_reports.outcome import Outcome, collect_records
 from dse_oss_reports.queries import fetch_commits, fetch_commits_and_resolved, fetch_resolved
-
-# ---------------------------------------------------------------------------
-# Fake PyGithub objects
-# ---------------------------------------------------------------------------
-
-
-class FakePulls(list):
-    """List subclass exposing PyGithub's ``totalCount`` attribute."""
-
-    @property
-    def totalCount(self) -> int:
-        return len(self)
-
-
-def make_fake_commit(
-    sha: str,
-    message: str,
-    author: str,
-    committer: str = "GitHub",
-    total: int = 1,
-    pr_numbers: list[int] | None = None,
-    html_url: str | None = None,
-):
-    """Build an object whose attribute shape matches a PyGithub Commit."""
-    pulls = FakePulls(SimpleNamespace(number=n) for n in (pr_numbers or []))
-    return SimpleNamespace(
-        sha=sha,
-        commit=SimpleNamespace(
-            message=message,
-            author=SimpleNamespace(name=author),
-            committer=SimpleNamespace(name=committer),
-        ),
-        html_url=html_url or f"https://github.com/x/y/commit/{sha}",
-        stats=SimpleNamespace(total=total),
-        get_pulls=lambda: pulls,
-    )
-
-
-class FakeRepo:
-    def __init__(self, commits: list):
-        self._commits = commits
-
-    def get_commits(self, **_kwargs):
-        return list(self._commits)
-
-
-class FakeGithub:
-    """Replace ``dse_oss_reports.queries.Github`` for the duration of a test.
-
-    Construct one ``FakeGithub`` per test, then patch the module-level constructor
-    to a lambda that returns it; the lambda accepts ``auth=...`` and ignores it.
-    """
-
-    def __init__(
-        self,
-        repos: dict[str, FakeRepo] | None = None,
-        *,
-        issue_results: list | None = None,
-        pr_results: list | None = None,
-    ):
-        self.repos = repos or {}
-        self.issue_results = issue_results or []
-        self.pr_results = pr_results or []
-        self.closed = False
-
-    def get_repo(self, full_name: str) -> FakeRepo:
-        return self.repos[full_name]
-
-    def search_issues(self, query: str) -> list:
-        if "is:issue" in query:
-            return list(self.issue_results)
-        if "is:pr" in query:
-            return list(self.pr_results)
-        return []
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def make_fake_resolved(
-    *,
-    number: int,
-    title: str,
-    org: str,
-    repo: str,
-    is_pr: bool,
-    author_login: str = "alice",
-    state: str = "closed",
-    created_at: datetime | None = None,
-    updated_at: datetime | None = None,
-):
-    """Build an object whose attribute shape matches a PyGithub Issue/PR search result."""
-    return SimpleNamespace(
-        number=number,
-        title=title,
-        state=state,
-        pull_request=SimpleNamespace() if is_pr else None,
-        user=SimpleNamespace(login=author_login),
-        html_url=f"https://github.com/{org}/{repo}/issues/{number}",
-        created_at=created_at or datetime(2026, 2, 1),
-        updated_at=updated_at or datetime(2026, 3, 1),
-        repository=SimpleNamespace(
-            owner=SimpleNamespace(login=org),
-            name=repo,
-        ),
-    )
+from tests.utils import mock_client, run, search_handler, search_item
 
 
 # ---------------------------------------------------------------------------
-# fetch_commits
+# Fixtures: GraphQL commit-history + REST search payloads
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_commits_single_task_returns_dataframe(monkeypatch):
-    fake_repo = FakeRepo(
-        [
-            make_fake_commit(
-                sha="abc123",
-                message="feat: thing",
-                author="Alice Example",
-                total=42,
-                pr_numbers=[],
+def _commit_node(oid, headline, prs, login="alice", adds=1, dels=0):
+    return {
+        "oid": oid,
+        "messageHeadline": headline,
+        "additions": adds,
+        "deletions": dels,
+        "url": f"https://github.com/acme/widget/commit/{oid}",
+        "author": {"name": "Alice Example", "user": {"login": login}},
+        "committer": {"name": "GitHub"},
+        "associatedPullRequests": {"totalCount": len(prs), "nodes": [{"number": n} for n in prs]},
+    }
+
+
+def _history_payload(nodes):
+    return {
+        "data": {
+            "repository": {
+                "defaultBranchRef": {
+                    "target": {
+                        "history": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": nodes,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+def _history_handler(by_repo_nodes):
+    def handler(request):
+        variables = json.loads(request.content)["variables"]
+        nodes = by_repo_nodes.get((variables["owner"], variables["name"]), [])
+        return httpx.Response(200, json=_history_payload(nodes))
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
+# fetch_commits (async, GraphQL)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_commits_dedups_filters_and_shapes_rows():
+    nodes = [
+        _commit_node("aaa", "feat a", [42]),
+        _commit_node("bbb", "fix b", [42]),  # same PR -> dropped
+        _commit_node("ccc", "chore c", []),  # standalone -> kept
+        _commit_node("ddd", "merge", [1, 2]),  # >1 PR -> skipped
+        _commit_node("eee", "other", [], login="mallory"),  # untracked -> dropped
+    ]
+    handler = _history_handler({("acme", "widget"): nodes})
+
+    async def go():
+        async with mock_client(handler) as c:
+            return await fetch_commits(
+                c, [("acme", "widget", "alice")], datetime(2026, 1, 1), datetime(2026, 4, 1)
+            )
+
+    rows = collect_records(run(go()))
+    assert [r["sha"] for r in rows] == ["aaa", "ccc"]
+    assert rows[0]["total_changes"] == 1
+    assert rows[0]["organization"] == "acme"
+    assert rows[0]["repository"] == "widget"
+
+
+def test_fetch_commits_aggregates_across_repos():
+    by_repo = {
+        ("acme", "widget"): [_commit_node("aaa", "x", [], login="alice")],
+        ("globex", "doohickey"): [_commit_node("bbb", "y", [], login="bob")],
+    }
+    handler = _history_handler(by_repo)
+
+    async def go():
+        async with mock_client(handler) as c:
+            return await fetch_commits(
+                c,
+                [("acme", "widget", "alice"), ("globex", "doohickey", "bob")],
+                datetime(2026, 1, 1),
+                datetime(2026, 4, 1),
+            )
+
+    rows = collect_records(run(go()))
+    assert sorted(r["sha"] for r in rows) == ["aaa", "bbb"]
+    assert sorted(r["repository"] for r in rows) == ["doohickey", "widget"]
+
+
+def test_fetch_commits_degrades_unit_on_error():
+    def handler(request):
+        return httpx.Response(500, text="boom")
+
+    async def go():
+        async with mock_client(handler) as c:
+            return await fetch_commits(
+                c, [("acme", "widget", "alice")], datetime(2026, 1, 1), datetime(2026, 4, 1)
+            )
+
+    outcomes = run(go())
+    assert [o.status for o in outcomes] == ["degraded"]
+    assert collect_records(outcomes) == []
+
+
+def test_fetch_commits_throttle_propagates_as_hard_failure():
+    # A sustained 429 must NOT degrade to an empty outcome — it fails the whole run loud.
+    def handler(request):
+        return httpx.Response(429, json={"message": "secondary rate limit"})
+
+    async def go():
+        async with mock_client(handler, max_retries=1) as c:
+            return await fetch_commits(
+                c, [("acme", "widget", "alice")], datetime(2026, 1, 1), datetime(2026, 4, 1)
+            )
+
+    with pytest.raises(RuntimeError):
+        run(go())
+
+
+# ---------------------------------------------------------------------------
+# fetch_resolved (async, REST search bridge)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_resolved_columns_type_and_task_filter():
+    issues = [
+        search_item(1, "acme", "widget", is_pr=False),
+        search_item(2, "acme", "other", is_pr=False),  # repo not in tasks -> dropped
+    ]
+    prs = [search_item(7, "acme", "widget", is_pr=True)]
+    handler = search_handler(issues, prs)
+
+    async def go():
+        async with mock_client(handler) as c:
+            return await fetch_resolved(
+                c,
+                [("acme", "widget", "alice")],
+                [("Alice Example", "alice")],
+                datetime(2026, 1, 1),
+                datetime(2026, 4, 1),
+            )
+
+    rows = collect_records(run(go()))
+    assert {(r["number"], r["type"]) for r in rows} == {(1, "Issue"), (7, "PR")}
+    assert all(r["organization"] == "acme" and r["repository"] == "widget" for r in rows)
+    assert all(r["contributor"] == "alice" for r in rows)
+
+
+def test_fetch_resolved_degrades_unit_on_error():
+    def handler(request):
+        return httpx.Response(500, text="boom")
+
+    async def go():
+        async with mock_client(handler) as c:
+            return await fetch_resolved(
+                c,
+                [("acme", "widget", "alice")],
+                [("Alice Example", "alice")],
+                datetime(2026, 1, 1),
+                datetime(2026, 4, 1),
+            )
+
+    outcomes = run(go())
+    assert [o.status for o in outcomes] == ["degraded"]
+    assert collect_records(outcomes) == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_commits_and_resolved (sync wrapper builds frames + dedups resolved)
+# ---------------------------------------------------------------------------
+
+
+class _DummyClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+
+def test_fetch_commits_and_resolved_builds_frames_and_dedups(monkeypatch):
+    async def fake_commits(client, tasks, ts, te, **_kw):
+        return [
+            Outcome.ok(
+                "commits",
+                [
+                    {
+                        "sha": "abc",
+                        "message": "m",
+                        "author": "A",
+                        "committer": "G",
+                        "url": "u",
+                        "total_changes": 3,
+                        "organization": "acme",
+                        "repository": "widget",
+                    }
+                ],
             )
         ]
-    )
-    fake = FakeGithub({"acme/widget": fake_repo})
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
 
-    df = fetch_commits(
-        token="fake-token",
-        tasks=[("acme", "widget", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
+    def _resolved_row(contributor):
+        return {
+            "number": 42,
+            "title": "shared",
+            "type": "Issue",
+            "state": "closed",
+            "author": "alice",
+            "url": "u",
+            "created_at": None,
+            "updated_at": None,
+            "organization": "acme",
+            "repository": "widget",
+            "contributor": contributor,
+        }
 
-    assert list(df.columns) == [
-        "sha",
-        "message",
-        "author",
-        "committer",
-        "url",
-        "total_changes",
-        "organization",
-        "repository",
-    ]
-    assert len(df) == 1
-    row = df.iloc[0]
-    assert row["sha"] == "abc123"
-    assert row["message"] == "feat: thing"
-    assert row["author"] == "Alice Example"
-    assert row["total_changes"] == 42
-    assert row["organization"] == "acme"
-    assert row["repository"] == "widget"
-
-
-def test_fetch_commits_collapses_multiple_commits_from_same_pr(monkeypatch):
-    # Three commits all merged via PR #42 → one representative row, not three.
-    fake_repo = FakeRepo(
-        [
-            make_fake_commit("aaa", "feat: a", "Alice", pr_numbers=[42]),
-            make_fake_commit("bbb", "fix: b", "Alice", pr_numbers=[42]),
-            make_fake_commit("ccc", "chore: c", "Alice", pr_numbers=[42]),
+    async def fake_resolved(client, tasks, contributors, ts, te, **_kw):
+        # Same #42 from two contributors -> dedups to one row.
+        return [
+            Outcome.ok("alice", [_resolved_row("alice")]),
+            Outcome.ok("bob", [_resolved_row("bob")]),
         ]
-    )
-    monkeypatch.setattr(
-        "dse_oss_reports.queries.Github",
-        lambda **kw: FakeGithub({"acme/widget": fake_repo}),
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
 
-    df = fetch_commits(
-        token=None,
-        tasks=[("acme", "widget", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
+    monkeypatch.setattr(queries, "fetch_commits", fake_commits)
+    monkeypatch.setattr(queries, "fetch_resolved", fake_resolved)
+    monkeypatch.setattr(queries, "AsyncGitHubClient", lambda *a, **k: _DummyClient())
 
-    assert len(df) == 1
-    # The first commit is the representative (matches the existing veda-odd behavior)
-    assert df.iloc[0]["sha"] == "aaa"
-
-
-def test_fetch_commits_keeps_all_standalone_commits_with_no_pr(monkeypatch):
-    fake_repo = FakeRepo(
-        [
-            make_fake_commit("aaa", "feat: a", "Alice", pr_numbers=[]),
-            make_fake_commit("bbb", "fix: b", "Alice", pr_numbers=[]),
-        ]
-    )
-    monkeypatch.setattr(
-        "dse_oss_reports.queries.Github",
-        lambda **kw: FakeGithub({"acme/widget": fake_repo}),
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_commits(
-        token=None,
-        tasks=[("acme", "widget", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
+    commits_df, resolved_df, manifest = fetch_commits_and_resolved(
+        None,
+        [("acme", "widget", "alice")],
+        [("A", "alice"), ("B", "bob")],
+        datetime(2026, 1, 1),
+        datetime(2026, 4, 1),
     )
 
-    assert sorted(df["sha"].tolist()) == ["aaa", "bbb"]
-
-
-def test_fetch_commits_aggregates_rows_across_tasks(monkeypatch):
-    repos = {
-        "acme/widget": FakeRepo([make_fake_commit("aaa", "x", "Alice", pr_numbers=[])]),
-        "globex/doohickey": FakeRepo([make_fake_commit("bbb", "y", "Bob", pr_numbers=[])]),
-    }
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: FakeGithub(repos))
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_commits(
-        token=None,
-        tasks=[("acme", "widget", "alice"), ("globex", "doohickey", "bob")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    assert sorted(df["sha"].tolist()) == ["aaa", "bbb"]
-    assert sorted(df["repository"].tolist()) == ["doohickey", "widget"]
-
-
-def test_fetch_commits_returns_empty_dataframe_with_columns_when_no_tasks(monkeypatch):
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: FakeGithub())
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_commits(
-        token=None,
-        tasks=[],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    assert len(df) == 0
-    # Columns must still be present so downstream concat / to_csv works
-    assert "sha" in df.columns
-    assert "organization" in df.columns
-
-
-def test_fetch_commits_swallows_per_task_errors_and_keeps_other_results(monkeypatch):
-    # Only "acme/widget" is present; "acme/missing" raises KeyError on lookup.
-    repos = {"acme/widget": FakeRepo([make_fake_commit("ok", "ok", "Alice", pr_numbers=[])])}
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: FakeGithub(repos))
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_commits(
-        token=None,
-        tasks=[("acme", "widget", "alice"), ("acme", "missing", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    # The successful task's row survives; the failing one contributes nothing.
-    assert df["sha"].tolist() == ["ok"]
-
-
-# ---------------------------------------------------------------------------
-# fetch_resolved
-# ---------------------------------------------------------------------------
-
-
-def test_fetch_resolved_returns_dataframe_with_expected_columns(monkeypatch):
-    fake = FakeGithub(
-        issue_results=[
-            make_fake_resolved(number=1, title="bug", org="acme", repo="widget", is_pr=False),
-        ],
-        pr_results=[],
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_resolved(
-        token=None,
-        tasks=[("acme", "widget", "alice")],
-        contributors=[("Alice Example", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    assert list(df.columns) == [
-        "number",
-        "title",
-        "type",
-        "state",
-        "author",
-        "url",
-        "created_at",
-        "updated_at",
-        "organization",
-        "repository",
-        "contributor",
-    ]
-    assert len(df) == 1
-    row = df.iloc[0]
-    assert row["number"] == 1
-    assert row["type"] == "Issue"
-    assert row["organization"] == "acme"
-    assert row["contributor"] == "alice"
-
-
-def test_fetch_resolved_marks_pull_requests_with_type_pr(monkeypatch):
-    fake = FakeGithub(
-        issue_results=[],
-        pr_results=[
-            make_fake_resolved(number=7, title="merge", org="acme", repo="widget", is_pr=True),
-        ],
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_resolved(
-        token=None,
-        tasks=[("acme", "widget", "alice")],
-        contributors=[("Alice Example", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    assert df["type"].tolist() == ["PR"]
-
-
-def test_fetch_resolved_drops_items_outside_the_configured_task_set(monkeypatch):
-    # GitHub search may return items from repos that match the repo: filter but whose
-    # (org, repo, contributor) triple isn't in tasks (e.g. the contributor was mentioned
-    # in a repo that's only in tasks for a different contributor). Those must be dropped.
-    fake = FakeGithub(
-        issue_results=[
-            make_fake_resolved(number=1, title="in-scope", org="acme", repo="widget", is_pr=False),
-            make_fake_resolved(
-                number=2, title="out-of-scope", org="acme", repo="other", is_pr=False
-            ),
-        ],
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_resolved(
-        token=None,
-        tasks=[("acme", "widget", "alice")],  # only widget is in tasks
-        contributors=[("Alice Example", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    assert df["repository"].tolist() == ["widget"]
-    assert df["number"].tolist() == [1]
-
-
-def test_fetch_resolved_aggregates_across_contributors(monkeypatch):
-    # Both contributors hit the same fake (each thread builds its own client, but our
-    # lambda returns the same FakeGithub state — fine for verifying aggregation).
-    fake = FakeGithub(
-        issue_results=[
-            make_fake_resolved(number=1, title="t", org="acme", repo="widget", is_pr=False),
-        ],
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_resolved(
-        token=None,
-        tasks=[("acme", "widget", "alice"), ("acme", "widget", "bob")],
-        contributors=[("Alice Example", "alice"), ("Bob Example", "bob")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    # Each contributor's search returned the same issue; both get a row tagged with
-    # their respective contributor (the dedupe step happens at the cli layer).
-    assert sorted(df["contributor"].tolist()) == ["alice", "bob"]
-
-
-def test_fetch_resolved_swallows_per_contributor_errors(monkeypatch):
-    # search_issues raises for any query — every contributor's result becomes [].
-    class ExplodingGithub(FakeGithub):
-        def search_issues(self, query):
-            raise RuntimeError("API blew up")
-
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: ExplodingGithub())
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    df = fetch_resolved(
-        token=None,
-        tasks=[("acme", "widget", "alice")],
-        contributors=[("Alice Example", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-    )
-
-    # No rows, but the DataFrame still has the right columns for downstream code.
-    assert len(df) == 0
-    assert "number" in df.columns
-    assert "contributor" in df.columns
-
-
-# ---------------------------------------------------------------------------
-# fetch_commits_and_resolved
-# ---------------------------------------------------------------------------
-
-
-def test_fetch_commits_and_resolved_dedups_cross_contributor_resolved_rows(monkeypatch):
-    """A single issue surfacing under multiple contributors collapses to one row."""
-    fake = FakeGithub(
-        repos={
-            "acme/widget": FakeRepo(commits=[]),  # no commits — exercise resolved path
-        },
-        issue_results=[
-            # Same issue #42 visible to both alice and bob's search queries
-            make_fake_resolved(
-                number=42, title="shared bug", org="acme", repo="widget", is_pr=False
-            ),
-        ],
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    _, resolved_df = fetch_commits_and_resolved(
-        token=None,
-        tasks=[("acme", "widget", "alice"), ("acme", "widget", "bob")],
-        contributors=[("Alice Example", "alice"), ("Bob Example", "bob")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-        max_workers=2,
-    )
-
-    # Issue #42 collapses to one row (vs. the two raw rows fetch_resolved would return).
-    assert len(resolved_df) == 1
+    assert list(commits_df.columns) == queries._COMMIT_COLUMNS
+    assert len(commits_df) == 1
+    assert list(resolved_df.columns) == queries._RESOLVED_COLUMNS
+    assert len(resolved_df) == 1  # cross-contributor duplicate collapsed
     assert resolved_df.iloc[0]["number"] == 42
-    assert resolved_df.iloc[0]["contributor"] in {"alice", "bob"}
-
-
-def test_fetch_commits_and_resolved_sorts_resolved_by_org_repo_number(monkeypatch):
-    """Sorted output keeps PR-to-PR CSV diffs clean."""
-    fake = FakeGithub(
-        repos={"acme/widget": FakeRepo(commits=[])},
-        issue_results=[
-            make_fake_resolved(number=99, title="late", org="acme", repo="widget", is_pr=False),
-            make_fake_resolved(number=1, title="early", org="acme", repo="widget", is_pr=False),
-            make_fake_resolved(number=42, title="middle", org="acme", repo="widget", is_pr=False),
-        ],
-    )
-    monkeypatch.setattr("dse_oss_reports.queries.Github", lambda **kw: fake)
-    monkeypatch.setattr("dse_oss_reports.queries.Auth", SimpleNamespace(Token=lambda t: t))
-
-    _, resolved_df = fetch_commits_and_resolved(
-        token=None,
-        tasks=[("acme", "widget", "alice")],
-        contributors=[("Alice Example", "alice")],
-        time_start=datetime(2026, 1, 1),
-        time_end=datetime(2026, 4, 1),
-        max_workers=1,
-    )
-
-    assert resolved_df["number"].tolist() == [1, 42, 99]
+    assert manifest.degraded_fraction() == 0.0

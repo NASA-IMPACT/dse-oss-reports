@@ -82,7 +82,7 @@ def test_fetch_invokes_run_commits_report_with_loaded_objectives(monkeypatch, tm
     """fetch loads OBJECTIVES from paths.objectives_data_path and calls run_commits_report."""
     captured: dict = {}
 
-    def fake_run(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir):
+    def fake_run(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir, **_kw):
         captured.update(
             token=token,
             pi=pi,
@@ -126,11 +126,11 @@ def test_fetch_also_invokes_run_engagement_report(monkeypatch, tmp_path):
     """fetch calls run_engagement_report alongside run_commits_report."""
     captured: dict = {}
 
-    def fake_commits(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir):
+    def fake_commits(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir, **_kw):
         output_dir.mkdir(parents=True, exist_ok=True)
         return {"commits": output_dir / f"{pi}-authored-commits.csv"}
 
-    def fake_engagement(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir):
+    def fake_engagement(token, settings, pi_dates, objectives, *, pi, output_dir, **_kw):
         captured["pi"] = pi
         captured["output_dir"] = output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -154,6 +154,50 @@ def test_fetch_also_invokes_run_engagement_report(monkeypatch, tmp_path):
     assert code == 0
     assert captured["pi"] == "pi-26.2"
     assert captured["output_dir"] == Path("reports/output")
+
+
+def _setup_fetch_config(tmp_path) -> Path:
+    config_path = tmp_path / "team.toml"
+    config_path.write_text(FIXTURE.read_text())
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "reports" / "_objectives_data.json").write_text(
+        '{"pi-26.2": [{"issue_number": 1, "title": "x", "state": "open", '
+        '"state_reason": null, "contributors": [], "repos": []}]}\n'
+    )
+    return config_path
+
+
+def test_fetch_fails_when_degraded_fraction_exceeds_threshold(monkeypatch, tmp_path):
+    """A manifest whose degraded fraction exceeds --max-degraded makes fetch exit non-zero."""
+    from dse_oss_reports.outcome import Outcome, RunManifest
+
+    def _write(output_dir, name, manifest):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / name
+        path.write_text(manifest.to_json())
+        return {"manifest": path}
+
+    def fake_commits(token, settings, pi_dates, objectives, *, pi, max_workers, output_dir, **_kw):
+        # Both units degraded -> fraction 1.0, over any sane threshold.
+        manifest = RunManifest([Outcome.degraded("a", "x"), Outcome.degraded("b", "y")])
+        return _write(output_dir, f"{pi}-commits-manifest.json", manifest)
+
+    def fake_engagement(token, settings, pi_dates, objectives, *, pi, output_dir, **_kw):
+        manifest = RunManifest([Outcome.ok("c", [])])
+        return _write(output_dir, f"{pi}-engagement-manifest.json", manifest)
+
+    monkeypatch.setattr("dse_oss_reports.main.run_commits_report", fake_commits)
+    monkeypatch.setattr("dse_oss_reports.main.run_engagement_report", fake_engagement)
+    monkeypatch.setenv("DSE_OSS_REPORTS_TOKEN", "ci-token")
+    monkeypatch.chdir(tmp_path)
+    config_path = _setup_fetch_config(tmp_path)
+
+    over = main(["--config", str(config_path), "fetch", "--pi", "pi-26.2", "--max-degraded", "0.2"])
+    assert over == 1
+
+    # A generous threshold (1.0 >= fraction) tolerates the same run.
+    ok = main(["--config", str(config_path), "fetch", "--pi", "pi-26.2", "--max-degraded", "1.0"])
+    assert ok == 0
 
 
 def test_plot_invokes_run_plot_report_with_config_paths(monkeypatch, tmp_path):
