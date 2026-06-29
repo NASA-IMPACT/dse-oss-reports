@@ -97,25 +97,51 @@ def _cmd_fetch(config: Config, args: argparse.Namespace) -> int:
     if not token:
         return 1
     objectives = _load_objectives(config.paths.objectives_data_path)
-    run_commits_report(
-        token,
-        config.team,
-        config.pi_dates,
-        objectives,
-        pi=args.pi,
-        max_workers=args.max_workers,
-        output_dir=config.paths.output_dir,
-    )
-    run_engagement_report(
-        token,
-        config.team,
-        config.pi_dates,
-        objectives,
-        pi=args.pi,
-        max_workers=args.max_workers,
-        output_dir=config.paths.output_dir,
-    )
-    return 0
+    resume = getattr(args, "resume", False)
+    results = [
+        run_commits_report(
+            token,
+            config.team,
+            config.pi_dates,
+            objectives,
+            pi=args.pi,
+            max_workers=args.max_workers,
+            output_dir=config.paths.output_dir,
+            resume=resume,
+        ),
+        run_engagement_report(
+            token,
+            config.team,
+            config.pi_dates,
+            objectives,
+            pi=args.pi,
+            max_workers=args.max_workers,
+            output_dir=config.paths.output_dir,
+            resume=resume,
+        ),
+    ]
+    return _enforce_degraded_threshold(results, getattr(args, "max_degraded", 0.2))
+
+
+def _enforce_degraded_threshold(results: list, max_degraded: float) -> int:
+    """Fail the fetch (return 1) if any report's manifest exceeds ``max_degraded``.
+
+    Reads the degraded fraction from each written manifest sidecar; a fraction over the
+    threshold means too much data is missing to trust the report, so the run goes red.
+    """
+    over = False
+    for result in results:
+        manifest_path = (result or {}).get("manifest")
+        if manifest_path is None:
+            continue
+        fraction = json.loads(Path(manifest_path).read_text()).get("degraded_fraction", 0.0)
+        if fraction > max_degraded:
+            over = True
+            print(
+                f"Too much data degraded: {fraction:.0%} > {max_degraded:.0%} ({manifest_path})",
+                file=sys.stderr,
+            )
+    return 1 if over else 0
 
 
 def _cmd_plot(config: Config, args: argparse.Namespace) -> int:
@@ -147,6 +173,8 @@ def _cmd_generate_docs(config: Config, args: argparse.Namespace) -> int:
 def _cmd_run_all(config: Config, args: argparse.Namespace) -> int:
     args.pi = getattr(args, "pi", None)
     args.max_workers = getattr(args, "max_workers", 10)
+    args.max_degraded = getattr(args, "max_degraded", 0.2)
+    args.resume = getattr(args, "resume", False)
     args.show_labels = getattr(args, "show_labels", False)
     for handler in (_cmd_generate_config, _cmd_fetch, _cmd_plot, _cmd_generate_docs):
         code = handler(config, args)
@@ -179,6 +207,17 @@ def _build_parser() -> argparse.ArgumentParser:
     fetch_parser = sub.add_parser("fetch", help="Fetch authored commits and resolved items")
     fetch_parser.add_argument("--pi", help="PI to fetch (defaults to current)")
     fetch_parser.add_argument("--max-workers", type=int, default=10)
+    fetch_parser.add_argument(
+        "--max-degraded",
+        type=float,
+        default=0.2,
+        help="Fail the run if more than this fraction of fetch units degrade (default 0.2)",
+    )
+    fetch_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse checkpoints from a prior crashed run instead of refetching",
+    )
 
     plot_parser = sub.add_parser("plot", help="Render per-PI PNGs from the fetched CSVs")
     plot_parser.add_argument("--pi", help="PI to plot (defaults to current)")
@@ -190,6 +229,8 @@ def _build_parser() -> argparse.ArgumentParser:
     all_parser = sub.add_parser("run-all", help="Run all four pipeline stages in order")
     all_parser.add_argument("--pi", help="PI to operate on (defaults to current)")
     all_parser.add_argument("--max-workers", type=int, default=10)
+    all_parser.add_argument("--max-degraded", type=float, default=0.2)
+    all_parser.add_argument("--resume", action="store_true")
     all_parser.add_argument("--show-labels", action="store_true")
 
     return parser

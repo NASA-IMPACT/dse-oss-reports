@@ -7,3 +7,7 @@ dist/
 build/
 *.egg-info/
 .python-version
+
+# Fetch resume checkpoints (written under the report output dir; never committed)
+.checkpoints/
+**/.checkpoints/

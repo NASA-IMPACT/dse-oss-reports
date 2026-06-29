@@ -1,12 +1,12 @@
 """Scrape `pi-X.Y-objective` labelled issues from a planning repo into an OBJECTIVES dict."""
 
+import asyncio
 import json
 import logging
 import re
 from pathlib import Path
 
-from github import Auth, Github
-
+from dse_oss_reports.github_client import AsyncGitHubClient
 from dse_oss_reports.objectives import ObjectivesDict
 
 logger = logging.getLogger(__name__)
@@ -110,23 +110,37 @@ class ObjectivesGenerator:
 
     def fetch(self) -> ObjectivesDict:
         """Hit the GitHub search API and build an OBJECTIVES dict keyed by ``"pi-X.Y"``."""
-        g = Github(auth=Auth.Token(self.token))
-        try:
-            label_filter = ",".join(_PI_LABELS)
-            query = f"repo:{self.github_repo} is:issue label:{label_filter}"
-            issues = g.search_issues(query)
+        return asyncio.run(self._fetch_async())
 
-            objectives_by_pi: ObjectivesDict = {}
+    async def _display_name(
+        self, client: AsyncGitHubClient, login: str, cache: dict[str, str | None]
+    ) -> str | None:
+        """Resolve a user's display name (cached). REST issue search omits it, so we ask
+        ``GET /users/{login}`` once per distinct assignee — the equivalent of PyGithub's
+        lazy ``assignee.name`` lookup."""
+        if login not in cache:
+            response = await client.rest("GET", f"/users/{login}")
+            cache[login] = response.json().get("name")
+        return cache[login]
+
+    async def _fetch_async(self) -> ObjectivesDict:
+        label_filter = ",".join(_PI_LABELS)
+        query = f"repo:{self.github_repo} is:issue label:{label_filter}"
+        name_cache: dict[str, str | None] = {}
+        objectives_by_pi: ObjectivesDict = {}
+        async with AsyncGitHubClient(self.token) as client:
+            issues = await client.search_issues(query)
             for issue in issues:
                 pi = None
                 repos: list[tuple[str, str]] = []
-                for label in issue.labels:
-                    match = _PI_LABEL_RE.fullmatch(label.name)
+                for label in issue.get("labels", []):
+                    label_name = label.get("name", "")
+                    match = _PI_LABEL_RE.fullmatch(label_name)
                     if match:
                         pi = f"pi-{match.group(1)}"
                         continue
-                    if label.name.startswith("repo:"):
-                        repo_str = label.name[len("repo:") :]
+                    if label_name.startswith("repo:"):
+                        repo_str = label_name[len("repo:") :]
                         if "/" not in repo_str:
                             continue
                         org, repo_name = repo_str.split("/", 1)
@@ -136,27 +150,28 @@ class ObjectivesGenerator:
                 if pi is None:
                     continue
 
-                contributors = [
-                    (assignee.name or assignee.login, assignee.login)
-                    for assignee in issue.assignees
-                ]
+                contributors = []
+                for assignee in issue.get("assignees", []):
+                    login = assignee.get("login")
+                    if not login:
+                        continue
+                    name = await self._display_name(client, login, name_cache)
+                    contributors.append((name or login, login))
 
                 objectives_by_pi.setdefault(pi, []).append(
                     {
-                        "issue_number": issue.number,
-                        "title": issue.title,
-                        "state": issue.state,
-                        "state_reason": issue.state_reason,
+                        "issue_number": issue["number"],
+                        "title": issue["title"],
+                        "state": issue["state"],
+                        "state_reason": issue.get("state_reason"),
                         "contributors": contributors,
                         "repos": repos,
                     }
                 )
-            for pi_key, objs in sorted(objectives_by_pi.items()):
-                repo_count = sum(len(o["repos"]) for o in objs)
-                logger.info("  %s: %d objectives, %d repo mappings", pi_key, len(objs), repo_count)
-            return objectives_by_pi
-        finally:
-            g.close()
+        for pi_key, objs in sorted(objectives_by_pi.items()):
+            repo_count = sum(len(o["repos"]) for o in objs)
+            logger.info("  %s: %d objectives, %d repo mappings", pi_key, len(objs), repo_count)
+        return objectives_by_pi
 
     def write_data_module(self, path: Path) -> Path:
         """Render the fetched OBJECTIVES dict to ``path``, picking format by extension.

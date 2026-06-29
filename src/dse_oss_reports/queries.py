@@ -1,17 +1,27 @@
-"""Parallel GitHub queries for authored commits and resolved issues/PRs."""
+"""Async GitHub queries for authored commits and resolved issues/PRs.
 
+Commits come from one batched GraphQL ``history`` query per repo (additions/deletions
+and associated PRs inline — no REST N+1). Resolved issues/PRs come from the REST
+issue-search bridge, preserving the existing ``involves:``/``closed:`` semantics. The
+sync ``fetch_commits_and_resolved`` wrapper builds the client, runs both concurrently in
+one event loop, and returns the same ``(commits_df, resolved_df)`` as before.
+"""
+
+import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
-from github import Auth, Github
+
+from dse_oss_reports.checkpoint import CheckpointStore, run_or_resume
+from dse_oss_reports.github_client import AsyncGitHubClient, search_item_repo
+from dse_oss_reports.outcome import Outcome, RunManifest, collect_records
 
 logger = logging.getLogger(__name__)
 
 Task = tuple[str, str, str]  # (org, repo, username)
 Contributor = tuple[str, str]  # (name, username)
-
 
 _COMMIT_COLUMNS = [
     "sha",
@@ -23,104 +33,6 @@ _COMMIT_COLUMNS = [
     "organization",
     "repository",
 ]
-
-
-def _make_client(token: str | None) -> Github:
-    if token:
-        return Github(auth=Auth.Token(token))
-    return Github()
-
-
-def _fetch_commits_for_task(
-    g: Github,
-    owner: str,
-    repo: str,
-    author: str,
-    time_start: datetime,
-    time_end: datetime,
-) -> list[dict]:
-    """Fetch commits for one (org, repo, author), with PR-dedup applied.
-
-    A commit that belongs to exactly one PR is represented once per PR (the first
-    commit encountered "wins"). A commit that belongs to no PR is kept as-is.
-    Commits across multiple PRs are skipped (rare; mirrors the existing scripts).
-    """
-    try:
-        repo_obj = g.get_repo(f"{owner}/{repo}")
-        commits = repo_obj.get_commits(author=author, since=time_start, until=time_end)
-
-        seen_prs: set[int] = set()
-        kept = []
-        for commit in commits:
-            pulls = commit.get_pulls()
-            count = pulls.totalCount
-            if count == 0:
-                kept.append(commit)
-            elif count == 1:
-                number = pulls[0].number
-                if number not in seen_prs:
-                    seen_prs.add(number)
-                    kept.append(commit)
-            # commits in >1 PRs: skip
-
-        return [
-            {
-                "sha": c.sha,
-                "message": c.commit.message.split("\n")[0],
-                "author": c.commit.author.name,
-                "committer": c.commit.committer.name,
-                "url": c.html_url,
-                "total_changes": c.stats.total if c.stats else 0,
-                "organization": owner,
-                "repository": repo,
-            }
-            for c in kept
-        ]
-    except Exception:
-        logger.exception("Failed to fetch commits for %s/%s by %s", owner, repo, author)
-        return []
-
-
-def fetch_commits(
-    token: str | None,
-    tasks: list[Task],
-    time_start: datetime,
-    time_end: datetime,
-    *,
-    max_workers: int = 3,
-) -> pd.DataFrame:
-    """Fetch commits authored by each ``username`` to the default branch of each ``(org, repo)``.
-
-    Only counts commits whose author timestamp falls within ``[time_start, time_end]``.
-    Uses a thread pool of ``max_workers`` for parallel API calls; each thread gets its
-    own ``Github`` client to dodge thread-safety issues. Returns a DataFrame with columns
-    ``sha, message, author, committer, url, total_changes, organization, repository``.
-    """
-
-    def process(task: Task) -> list[dict]:
-        owner, repo, author = task
-        g = _make_client(token)
-        try:
-            return _fetch_commits_for_task(g, owner, repo, author, time_start, time_end)
-        finally:
-            g.close()
-
-    logger.info(
-        "Fetching commits for %d (repo, contributor) pairs (max_workers=%d)...",
-        len(tasks),
-        max_workers,
-    )
-    rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process, t) for t in tasks]
-        for i, future in enumerate(as_completed(futures), 1):
-            rows.extend(future.result())
-            if i % 50 == 0 or i == len(tasks):
-                logger.info("  commits progress: %d/%d", i, len(tasks))
-    logger.info("Found %d commits", len(rows))
-
-    return pd.DataFrame(rows, columns=_COMMIT_COLUMNS)
-
 
 _RESOLVED_COLUMNS = [
     "number",
@@ -136,105 +48,199 @@ _RESOLVED_COLUMNS = [
     "contributor",
 ]
 
+_COMMITS_QUERY = """
+query($owner:String!, $name:String!, $since:GitTimestamp!, $until:GitTimestamp!, $cursor:String) {
+  repository(owner:$owner, name:$name) {
+    defaultBranchRef { target { ... on Commit {
+      history(since:$since, until:$until, first:100, after:$cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          oid messageHeadline additions deletions url
+          author { name user { login } }
+          committer { name }
+          associatedPullRequests(first:5){ totalCount nodes { number } }
+        }
+      }
+    }}}
+  }
+}
+"""
 
-def _fetch_resolved_for_contributor(
-    g: Github,
+
+async def _commits_for_repo(
+    client: AsyncGitHubClient,
+    owner: str,
+    repo: str,
+    tracked: set[str],
+    since: str,
+    until: str,
+) -> list[dict]:
+    """Fetch default-branch commits in ``[since, until]`` authored by a ``tracked`` login.
+
+    PR-dedup mirrors the historical behavior, scoped per ``(login, pr_number)``: a commit
+    in exactly one PR is kept once per PR (first wins); commits in no PR are kept as-is;
+    commits spanning >1 PR are skipped. ``total_changes`` == additions + deletions, the
+    GraphQL equivalent of the old REST ``commit.stats.total``.
+    """
+    cursor = None
+    seen: set[tuple[str, int]] = set()
+    rows: list[dict] = []
+    while True:
+        data = await client.graphql(
+            _COMMITS_QUERY,
+            {"owner": owner, "name": repo, "since": since, "until": until, "cursor": cursor},
+        )
+        repository = data.get("repository") or {}
+        target = (repository.get("defaultBranchRef") or {}).get("target") or {}
+        history = target.get("history") or {}
+        for node in history.get("nodes", []):
+            login = ((node.get("author") or {}).get("user") or {}).get("login")
+            if login not in tracked:
+                continue
+            prs = node["associatedPullRequests"]
+            count = prs["totalCount"]
+            if count == 1:
+                key = (login, prs["nodes"][0]["number"])
+                if key in seen:
+                    continue
+                seen.add(key)
+            elif count > 1:
+                continue
+            rows.append(
+                {
+                    "sha": node["oid"],
+                    "message": node["messageHeadline"],
+                    "author": (node.get("author") or {}).get("name"),
+                    "committer": (node.get("committer") or {}).get("name"),
+                    "url": node["url"],
+                    "total_changes": node.get("additions", 0) + node.get("deletions", 0),
+                    "organization": owner,
+                    "repository": repo,
+                }
+            )
+        page = history.get("pageInfo", {})
+        if not page.get("hasNextPage"):
+            return rows
+        cursor = page.get("endCursor")
+
+
+async def fetch_commits(
+    client: AsyncGitHubClient,
+    tasks: list[Task],
+    time_start: datetime,
+    time_end: datetime,
+    *,
+    store: CheckpointStore | None = None,
+) -> list[Outcome]:
+    """Fetch authored commits for every ``(org, repo)`` in ``tasks``, once per repo.
+
+    Tasks are grouped by repo and the repo's commit history is fetched a single time,
+    then filtered to the tracked logins for that repo — fewer queries than fetching per
+    ``(repo, contributor)``. Returns one :class:`Outcome` per repo (records keyed by
+    ``_COMMIT_COLUMNS``); throttle exhaustion propagates. With a ``store``, repos already
+    checkpointed in a prior run are reused instead of re-fetched.
+    """
+    since = time_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    until = time_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    by_repo: dict[tuple[str, str], set[str]] = {}
+    for owner, repo, user in tasks:
+        by_repo.setdefault((owner, repo), set()).add(user)
+    return await asyncio.gather(
+        *[
+            run_or_resume(
+                store,
+                CheckpointStore.key(
+                    "commits", f"{owner}/{repo}", ",".join(sorted(tracked)), since, until
+                ),
+                lambda owner=owner, repo=repo, tracked=tracked: _commits_for_repo(
+                    client, owner, repo, tracked, since, until
+                ),
+                what=f"commits for {owner}/{repo}",
+            )
+            for (owner, repo), tracked in by_repo.items()
+        ]
+    )
+
+
+async def _resolved_for_contributor(
+    client: AsyncGitHubClient,
     tasks: list[Task],
     contributor: str,
     time_start: datetime,
     time_end: datetime,
 ) -> list[dict]:
-    """Fetch closed issues/PRs involving one contributor across all task repos."""
-    try:
-        start_str = time_start.strftime("%Y-%m-%d")
-        end_str = time_end.strftime("%Y-%m-%d")
-        repo_filters = " ".join(f"repo:{owner}/{repo}" for owner, repo, _ in tasks)
-        base_query = f"{repo_filters} involves:{contributor} closed:{start_str}..{end_str}"
+    """Fetch closed issues/PRs involving one contributor across their task repos (REST search)."""
+    start_str = time_start.strftime("%Y-%m-%d")
+    end_str = time_end.strftime("%Y-%m-%d")
+    # Scope to this contributor's repos only — one repo: per distinct repo, deduped — so
+    # the query stays under GitHub search's length limit (vs. one per task row).
+    repos = sorted({(owner, repo) for owner, repo, user in tasks if user == contributor})
+    repo_filters = " ".join(f"repo:{owner}/{repo}" for owner, repo in repos)
+    base_query = f"{repo_filters} involves:{contributor} closed:{start_str}..{end_str}"
 
-        issues = g.search_issues(f"is:issue {base_query}")
-        # Exclude PRs the contributor authored — they're already counted as commits.
-        prs = g.search_issues(f"is:pr {base_query} -author:{contributor}")
+    issues = await client.search_issues(f"is:issue {base_query}")
+    # Exclude PRs the contributor authored — they're already counted as commits.
+    prs = await client.search_issues(f"is:pr {base_query} -author:{contributor}")
 
-        task_set = set(tasks)
-        rows = []
-        for item in [*issues, *prs]:
-            owner = item.repository.owner.login
-            repo = item.repository.name
-            if (owner, repo, contributor) not in task_set:
-                continue
-            is_pr = item.pull_request is not None
-            rows.append(
-                {
-                    "number": item.number,
-                    "title": item.title,
-                    "type": "PR" if is_pr else "Issue",
-                    "state": item.state,
-                    "author": item.user.login if item.user else None,
-                    "url": item.html_url,
-                    "created_at": item.created_at.isoformat() if item.created_at else None,
-                    "updated_at": item.updated_at.isoformat() if item.updated_at else None,
-                    "organization": owner,
-                    "repository": repo,
-                    "contributor": contributor,
-                }
-            )
-        return rows
-    except Exception:
-        logger.exception("Failed to fetch resolved issues/PRs for %s", contributor)
-        return []
+    task_set = set(tasks)
+    rows = []
+    for item in [*issues, *prs]:
+        owner, repo = search_item_repo(item)
+        if (owner, repo, contributor) not in task_set:
+            continue
+        is_pr = "pull_request" in item
+        rows.append(
+            {
+                "number": item["number"],
+                "title": item["title"],
+                "type": "PR" if is_pr else "Issue",
+                "state": item["state"],
+                "author": (item.get("user") or {}).get("login"),
+                "url": item["html_url"],
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+                "organization": owner,
+                "repository": repo,
+                "contributor": contributor,
+            }
+        )
+    return rows
 
 
-def fetch_resolved(
-    token: str | None,
+async def fetch_resolved(
+    client: AsyncGitHubClient,
     tasks: list[Task],
     contributors: list[Contributor],
     time_start: datetime,
     time_end: datetime,
     *,
-    max_workers: int = 10,
-) -> pd.DataFrame:
-    """Fetch closed issues/PRs in which each contributor was involved.
-
-    "Involved" uses GitHub's ``involves:`` qualifier (author, assignee, mentioned, or
-    commenter). One search query per contributor covers all configured repos via repeated
-    ``repo:`` filters; results are filtered down to the explicit (org, repo, contributor)
-    triples in ``tasks`` before returning. Returns a DataFrame with columns
-    ``number, title, type, state, author, url, created_at, updated_at, organization,
-    repository, contributor``.
-    """
-
-    def process(contributor_pair: Contributor) -> list[dict]:
-        _name, username = contributor_pair
-        g = _make_client(token)
-        try:
-            return _fetch_resolved_for_contributor(g, tasks, username, time_start, time_end)
-        finally:
-            g.close()
-
-    logger.info(
-        "Fetching resolved issues/PRs for %d contributors (max_workers=%d)...",
-        len(contributors),
-        max_workers,
+    store: CheckpointStore | None = None,
+) -> list[Outcome]:
+    """Fetch closed issues/PRs each contributor was involved in. One Outcome per contributor."""
+    start_str = time_start.strftime("%Y-%m-%d")
+    end_str = time_end.strftime("%Y-%m-%d")
+    repos_fp = ",".join(sorted(f"{owner}/{repo}" for owner, repo, _ in tasks))
+    return await asyncio.gather(
+        *[
+            run_or_resume(
+                store,
+                CheckpointStore.key("resolved", username, repos_fp, start_str, end_str),
+                lambda username=username: _resolved_for_contributor(
+                    client, tasks, username, time_start, time_end
+                ),
+                what=f"resolved for {username}",
+            )
+            for _name, username in contributors
+        ]
     )
-    rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process, c) for c in contributors]
-        for i, future in enumerate(as_completed(futures), 1):
-            rows.extend(future.result())
-            logger.info("  resolved progress: %d/%d", i, len(contributors))
-    logger.info("Found %d resolved issues/PRs", len(rows))
-
-    return pd.DataFrame(rows, columns=_RESOLVED_COLUMNS)
 
 
 def _dedup_and_sort_resolved(df: pd.DataFrame) -> pd.DataFrame:
     """Collapse cross-contributor duplicates and sort for stable CSV output.
 
     A single issue/PR involving multiple tracked contributors appears once per
-    contributor in the raw search results. Plot counts treat each row as a
-    distinct resolution, so we drop duplicates on ``(organization, repository,
-    number)`` (first row wins — attribution is whichever thread finished first)
-    and sort by the same triple for diff-friendly output.
+    contributor in the raw search results. Drop duplicates on ``(organization,
+    repository, number)`` (first row wins) and sort by the same triple.
     """
     if df.empty:
         return df
@@ -253,67 +259,47 @@ def fetch_commits_and_resolved(
     time_end: datetime,
     *,
     max_workers: int = 10,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Fetch commits and resolved issues/PRs in a single shared thread pool.
+    checkpoint_dir: Path | None = None,
+    resume: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame, RunManifest]:
+    """Fetch commits and resolved issues/PRs concurrently in one event loop.
 
-    Submits both kinds of work to one ``ThreadPoolExecutor`` so commit-API tasks
-    interleave with search-API tasks. The dilution keeps concurrent search-API
-    calls well under GitHub's secondary rate limit, where two sequential pools
-    (one all-commits, one all-search) would burst the search endpoint and trip
-    rate-limit / 502 responses. Returns ``(commits_df, resolved_df)``.
+    Builds a single :class:`AsyncGitHubClient` (concurrency = ``max_workers``) and runs
+    the commit and search work together, so the two interleave under one rate-limit
+    budget. Returns ``(commits_df, resolved_df, manifest)`` — the resolved frame is
+    de-duped/sorted, and the manifest records every per-unit outcome. Throttle
+    exhaustion propagates out of :func:`asyncio.run` to fail the run loudly.
+
+    With ``checkpoint_dir``, completed units are persisted there; ``resume=True`` reuses a
+    prior crashed run's checkpoints, while the default clears them first for fresh data.
     """
+    store = CheckpointStore(checkpoint_dir) if checkpoint_dir is not None else None
+    if store is not None and not resume:
+        store.clear()
 
-    def process_commits(task: Task) -> list[dict]:
-        owner, repo, author = task
-        g = _make_client(token)
-        try:
-            return _fetch_commits_for_task(g, owner, repo, author, time_start, time_end)
-        finally:
-            g.close()
+    async def _collect() -> tuple[list[Outcome], list[Outcome]]:
+        async with AsyncGitHubClient(token, concurrency=max_workers) as client:
+            return await asyncio.gather(
+                fetch_commits(client, tasks, time_start, time_end, store=store),
+                fetch_resolved(client, tasks, contributors, time_start, time_end, store=store),
+            )
 
-    def process_resolved(contributor_pair: Contributor) -> list[dict]:
-        _name, username = contributor_pair
-        g = _make_client(token)
-        try:
-            return _fetch_resolved_for_contributor(g, tasks, username, time_start, time_end)
-        finally:
-            g.close()
-
-    total = len(tasks) + len(contributors)
     logger.info(
-        "Fetching %d commit tasks + %d resolved tasks in shared pool (max_workers=%d)...",
-        len(tasks),
+        "Fetching %d commit-repo groups + %d contributors (concurrency=%d)...",
+        len({(o, r) for o, r, _ in tasks}),
         len(contributors),
         max_workers,
     )
-
-    commit_rows: list[dict] = []
-    resolved_rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_kind: dict = {}
-        for t in tasks:
-            future_kind[executor.submit(process_commits, t)] = "commit"
-        for c in contributors:
-            future_kind[executor.submit(process_resolved, c)] = "resolved"
-
-        for i, future in enumerate(as_completed(future_kind), 1):
-            kind = future_kind[future]
-            result = future.result()
-            if kind == "commit":
-                commit_rows.extend(result)
-            else:
-                resolved_rows.extend(result)
-            if i % 25 == 0 or i == total:
-                logger.info("  combined progress: %d/%d", i, total)
-
-    resolved_df = _dedup_and_sort_resolved(pd.DataFrame(resolved_rows, columns=_RESOLVED_COLUMNS))
+    commit_outcomes, resolved_outcomes = asyncio.run(_collect())
+    commits_df = pd.DataFrame(collect_records(commit_outcomes), columns=_COMMIT_COLUMNS)
+    resolved_df = _dedup_and_sort_resolved(
+        pd.DataFrame(collect_records(resolved_outcomes), columns=_RESOLVED_COLUMNS)
+    )
+    manifest = RunManifest([*commit_outcomes, *resolved_outcomes])
     logger.info(
-        "Found %d commits and %d resolved issues/PRs (after dedup)",
-        len(commit_rows),
+        "Found %d commits and %d resolved issues/PRs (after dedup); %.0f%% units degraded",
+        len(commits_df),
         len(resolved_df),
+        manifest.degraded_fraction() * 100,
     )
-
-    return (
-        pd.DataFrame(commit_rows, columns=_COMMIT_COLUMNS),
-        resolved_df,
-    )
+    return commits_df, resolved_df, manifest

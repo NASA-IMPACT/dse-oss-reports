@@ -18,6 +18,7 @@ from dse_oss_reports.cli import (
     run_generate_docs,
     run_plot_report,
 )
+from dse_oss_reports.outcome import RunManifest
 
 
 def make_settings(**overrides) -> TeamSettings:
@@ -43,13 +44,13 @@ def test_run_commits_report_writes_both_csvs_at_harmonized_paths(
 ):
     captured: dict = {}
 
-    def fake_fetch_combined(token, tasks, contributors, time_start, time_end, *, max_workers):
-        captured["args"] = (token, tasks, contributors, time_start, time_end, max_workers)
+    def fake_fetch_combined(token, tasks, contributors, ts, te, *, max_workers, **_kw):
+        captured["args"] = (token, tasks, contributors, ts, te, max_workers)
         commits_df = pd.DataFrame([{"sha": "abc", "organization": "acme", "repository": "widget"}])
         resolved_df = pd.DataFrame(
             [{"number": 1, "organization": "acme", "repository": "widget", "contributor": "alice"}]
         )
-        return commits_df, resolved_df
+        return commits_df, resolved_df, RunManifest([])
 
     monkeypatch.setattr("dse_oss_reports.cli.fetch_commits_and_resolved", fake_fetch_combined)
 
@@ -90,7 +91,7 @@ def test_run_commits_report_defaults_pi_to_current(
     # Simpler: the resolver picks the latest defined PI when today is outside all windows.
     monkeypatch.setattr(
         "dse_oss_reports.cli.fetch_commits_and_resolved",
-        lambda *a, **kw: (pd.DataFrame(), pd.DataFrame()),
+        lambda *a, **kw: (pd.DataFrame(), pd.DataFrame(), RunManifest([])),
     )
 
     paths = run_commits_report(
@@ -118,8 +119,8 @@ def test_run_commits_report_defaults_pi_to_current(
 def test_run_engagement_report_writes_csv(
     monkeypatch, sample_objectives, sample_pi_dates, tmp_path
 ):
-    def fake_fetch_engagement(token, tasks, contributors, time_start, time_end, *, max_workers):
-        return pd.DataFrame(
+    def fake_fetch_engagement(token, tasks, contributors, ts, te, *, max_workers, **_kw):
+        df = pd.DataFrame(
             [
                 {
                     "number": 7,
@@ -135,6 +136,7 @@ def test_run_engagement_report_writes_csv(
                 }
             ]
         )
+        return df, RunManifest([])
 
     monkeypatch.setattr("dse_oss_reports.cli.fetch_engagement", fake_fetch_engagement)
 

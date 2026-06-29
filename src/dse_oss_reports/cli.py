@@ -45,6 +45,7 @@ def run_commits_report(
     pi: str | None = None,
     max_workers: int = 10,
     output_dir: Path = Path("output"),
+    resume: bool = False,
 ) -> dict[str, Path]:
     """Fetch authored commits + resolved issues/PRs for one PI, write both CSVs.
 
@@ -72,22 +73,26 @@ def run_commits_report(
         len(contributors),
     )
 
-    commits_df, resolved_df = fetch_commits_and_resolved(
+    commits_df, resolved_df, manifest = fetch_commits_and_resolved(
         token,
         tasks,
         contributors,
         time_start,
         time_end,
         max_workers=max_workers,
+        checkpoint_dir=output_dir / ".checkpoints" / pi / "commits",
+        resume=resume,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     commits_path = output_dir / f"{pi}-authored-commits.csv"
     resolved_path = output_dir / f"{pi}-resolved-issues-prs.csv"
+    manifest_path = output_dir / f"{pi}-commits-manifest.json"
     commits_df.to_csv(commits_path, index=False)
     resolved_df.to_csv(resolved_path, index=False)
+    manifest_path.write_text(manifest.to_json())
 
-    return {"commits": commits_path, "resolved": resolved_path}
+    return {"commits": commits_path, "resolved": resolved_path, "manifest": manifest_path}
 
 
 def run_engagement_report(
@@ -99,6 +104,7 @@ def run_engagement_report(
     pi: str | None = None,
     max_workers: int = 10,
     output_dir: Path = Path("output"),
+    resume: bool = False,
 ) -> dict[str, Path]:
     """Fetch foundational engagement for one PI and write ``{pi}-engagement.csv``.
 
@@ -123,14 +129,23 @@ def run_engagement_report(
         len(contributors),
     )
 
-    engagement_df = fetch_engagement(
-        token, tasks, contributors, time_start, time_end, max_workers=max_workers
+    engagement_df, manifest = fetch_engagement(
+        token,
+        tasks,
+        contributors,
+        time_start,
+        time_end,
+        max_workers=max_workers,
+        checkpoint_dir=output_dir / ".checkpoints" / pi / "engagement",
+        resume=resume,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     engagement_path = output_dir / f"{pi}-engagement.csv"
+    manifest_path = output_dir / f"{pi}-engagement-manifest.json"
     engagement_df.to_csv(engagement_path, index=False)
-    return {"engagement": engagement_path}
+    manifest_path.write_text(manifest.to_json())
+    return {"engagement": engagement_path, "manifest": manifest_path}
 
 
 def run_plot_report(
