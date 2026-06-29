@@ -7,6 +7,7 @@ pytest-asyncio plugin is needed.
 import httpx
 import pytest
 
+from dse_oss_reports.github_client import AsyncGitHubClient
 from tests.utils import mock_client, run
 
 
@@ -85,6 +86,35 @@ def test_retries_exhausted_raises_rate_limited_message():
     with pytest.raises(RuntimeError) as exc:
         run(go())
     assert "rate limited" in str(exc.value).lower()
+
+
+def test_search_requests_are_paced_to_stay_under_the_limit():
+    # Consecutive searches are spaced by search_min_interval so we don't burst the
+    # Search API's low rate limit (the failure mode that crashed the action).
+    clock = {"t": 1000.0}
+    slept = []
+
+    async def rec_sleep(seconds):
+        slept.append(seconds)
+        clock["t"] += seconds
+
+    def handler(request):
+        return httpx.Response(200, json={"items": [], "total_count": 0})
+
+    async def go():
+        client = AsyncGitHubClient(
+            "t",
+            transport=httpx.MockTransport(handler),
+            sleep=rec_sleep,
+            now=lambda: clock["t"],
+            search_min_interval=2.0,
+        )
+        await client.search_issues("is:issue a")  # first: no wait (no prior search)
+        await client.search_issues("is:issue b")  # second: spaced by the interval
+        await client.aclose()
+
+    run(go())
+    assert 2.0 in slept
 
 
 def test_graphql_rate_limited_errors_exhausted_raise_rate_limited_message():

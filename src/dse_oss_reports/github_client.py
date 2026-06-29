@@ -42,6 +42,8 @@ class AsyncGitHubClient:
         *,
         concurrency: int = 10,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        search_concurrency: int = 1,
+        search_min_interval: float = 2.0,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         now: Callable[[], float] = time.time,
@@ -54,6 +56,12 @@ class AsyncGitHubClient:
         )
         self._sem = asyncio.Semaphore(concurrency)
         self._max_retries = max_retries
+        # GitHub's Search API has a separate, low limit (~30 req/min). Serialize search
+        # and space requests so a backoff actually lets the limit clear, instead of 10
+        # concurrent searches sustaining a secondary 403 until retries exhaust.
+        self._search_sem = asyncio.Semaphore(search_concurrency)
+        self._search_min_interval = search_min_interval
+        self._last_search_at = 0.0
         self._sleep = sleep
         self._now = now
 
@@ -87,6 +95,10 @@ class AsyncGitHubClient:
                     raise RateLimitExhausted(
                         f"GitHub {method} {url} rate limited; reset too far to wait"
                     )
+                logger.warning(
+                    f"GitHub throttled {method} {url}; "
+                    f"retry {attempt + 1}/{self._max_retries} in {delay:.0f}s"
+                )
                 await self._sleep(delay)
                 attempt += 1
                 continue
@@ -106,6 +118,10 @@ class AsyncGitHubClient:
                     delay = retry_delay(dict(response.headers), attempt, now=self._now)
                     if attempt >= self._max_retries or delay is None:
                         raise RateLimitExhausted("GraphQL rate limited; retries exhausted")
+                    logger.warning(
+                        f"GitHub GraphQL throttled; "
+                        f"retry {attempt + 1}/{self._max_retries} in {delay:.0f}s"
+                    )
                     await self._sleep(delay)
                     attempt += 1
                     continue
@@ -129,16 +145,14 @@ class AsyncGitHubClient:
         items: list[dict] = []
         page = 1
         while page <= max_pages:
-            response = await self.rest(
-                "GET",
-                "/search/issues",
+            response = await self._search_request(
                 params={
                     "q": query,
                     "per_page": per_page,
                     "page": page,
                     "sort": "created",
                     "order": "asc",
-                },
+                }
             )
             data = response.json()
             if data.get("incomplete_results"):
@@ -149,3 +163,20 @@ class AsyncGitHubClient:
                 break
             page += 1
         return items
+
+    async def _search_request(self, *, params: dict) -> httpx.Response:
+        """One paced, serialized /search/issues request.
+
+        Holding ``_search_sem`` across the request (and any internal backoff) keeps
+        concurrent searches at ``search_concurrency`` so a throttle backoff isn't
+        undone by other in-flight searches; ``_search_min_interval`` spaces requests
+        to stay under the Search API's ~30/min budget.
+        """
+        async with self._search_sem:
+            wait = self._search_min_interval - (self._now() - self._last_search_at)
+            if wait > 0:
+                await self._sleep(wait)
+            try:
+                return await self._request("GET", "/search/issues", params=params)
+            finally:
+                self._last_search_at = self._now()
