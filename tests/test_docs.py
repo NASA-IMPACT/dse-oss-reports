@@ -119,7 +119,7 @@ def test_images_dir_none_keeps_unconditional_rendering(sample_objectives, tmp_pa
 def test_configuration_footer_links_to_objectives_data_module(sample_objectives):
     md = render_objectives_md(sample_objectives, make_settings())
     # Footer should reference where objectives data lives so readers can edit it.
-    assert "_objectives_data.py" in md
+    assert "_objectives_data.json" in md
     assert "https://github.com/NASA-IMPACT/veda-odd" in md
 
 

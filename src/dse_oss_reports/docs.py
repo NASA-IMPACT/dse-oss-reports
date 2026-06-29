@@ -96,7 +96,7 @@ def render_objectives_md(
     - Top-level heading and intro paragraph
     - "Current PI" section with full objective table + commits + resolved-items charts
     - Collapsible ``<details>`` blocks for each historical PI in reverse-chronological order
-    - Caveats / configuration footer with a link to the team's ``_objectives_data.py``
+    - Caveats / configuration footer with a link to the team's ``_objectives_data.json``
 
     ``current_pi`` defaults to the chronologically latest key in ``objectives``.
     Image links use ``{images_dir_relative}/{pi}-authored-commits.png`` and
@@ -190,15 +190,15 @@ def _render_footer(repo_url: str) -> list[str]:
         "",
         "## Configuration",
         "",
-        f"Objectives data lives in [`reports/_objectives_data.py`]"
-        f"({repo_url}/blob/main/reports/_objectives_data.py) — auto-generated from "
+        f"Objectives data lives in [`reports/_objectives_data.json`]"
+        f"({repo_url}/blob/main/reports/_objectives_data.json) — auto-generated from "
         "GitHub issues by `dse_oss_reports.generator.ObjectivesGenerator`.",
         "",
         "To regenerate this page:",
         "",
         "```bash",
-        "cd reports",
-        "uv run generate_docs.py",
+        'uvx --from "dse-oss-reports @ git+https://github.com/NASA-IMPACT/dse-oss-reports.git" \\',
+        "  dse-oss-reports --config team.toml generate-docs",
         "```",
         "",
     ]

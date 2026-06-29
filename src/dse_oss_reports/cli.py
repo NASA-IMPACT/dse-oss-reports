@@ -198,12 +198,13 @@ def run_generate_config(
     settings: TeamSettings,
     *,
     long_org_name_mapping: dict[str, str] | None = None,
-    output_path: Path = Path("_objectives_data.py"),
+    output_path: Path = Path("reports/_objectives_data.json"),
 ) -> Path:
-    """Scrape the team's planning repo and write ``_objectives_data.py``.
+    """Scrape the team's planning repo and write ``_objectives_data.json``.
 
-    Writes to ``output_path`` (defaults to the consuming repo's ``reports/_objectives_data.py``
-    when invoked with cwd at ``reports/``). Returns the path written.
+    Writes to ``output_path`` (defaults to the consuming repo's ``reports/_objectives_data.json``).
+    The format is picked from the extension — ``.json`` (preferred) or legacy ``.py``.
+    Returns the path written.
     """
     generator = ObjectivesGenerator(
         token=token,
