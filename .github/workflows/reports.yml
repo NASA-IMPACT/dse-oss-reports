@@ -66,6 +66,5 @@ jobs:
           add-paths: |
             reports/output/
             reports/_objectives_data.json
-            reports/_objectives_data.py
             docs/images/
             docs/objectives.md

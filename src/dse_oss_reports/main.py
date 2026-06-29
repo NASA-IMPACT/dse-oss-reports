@@ -172,7 +172,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     sub.add_parser("current-pi", help="Print the resolved current PI and exit")
-    sub.add_parser("generate-config", help="Scrape GitHub issues into _objectives_data.py")
+    sub.add_parser(
+        "generate-config", help="Scrape GitHub issues into reports/_objectives_data.json"
+    )
 
     fetch_parser = sub.add_parser("fetch", help="Fetch authored commits and resolved items")
     fetch_parser.add_argument("--pi", help="PI to fetch (defaults to current)")

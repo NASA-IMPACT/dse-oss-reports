@@ -1,7 +1,7 @@
 """Pure helpers for slicing an ``OBJECTIVES`` dict.
 
-Each team's auto-generated ``_objectives_data.py`` defines an ``OBJECTIVES``
-dict shaped like::
+Each team's auto-generated ``_objectives_data.json`` (or legacy ``_objectives_data.py``)
+defines an ``OBJECTIVES`` dict shaped like::
 
     {
         "pi-26.2": [
