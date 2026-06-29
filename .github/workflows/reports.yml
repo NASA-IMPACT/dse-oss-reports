@@ -65,6 +65,7 @@ jobs:
           branch: ${{ inputs.pr-branch }}
           add-paths: |
             reports/output/
+            :!reports/output/*-manifest.json
             reports/_objectives_data.json
             docs/images/
             docs/objectives.md
