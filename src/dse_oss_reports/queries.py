@@ -10,13 +10,11 @@ one event loop, and returns the same ``(commits_df, resolved_df)`` as before.
 import asyncio
 import logging
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 
-from dse_oss_reports.checkpoint import CheckpointStore, run_or_resume
 from dse_oss_reports.github_client import AsyncGitHubClient, search_item_repo
-from dse_oss_reports.outcome import Outcome, RunManifest, collect_records
+from dse_oss_reports.outcome import Outcome, RunManifest, collect_records, run_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -125,20 +123,14 @@ async def _commits_for_repo(
 
 
 async def fetch_commits(
-    client: AsyncGitHubClient,
-    tasks: list[Task],
-    time_start: datetime,
-    time_end: datetime,
-    *,
-    store: CheckpointStore | None = None,
+    client: AsyncGitHubClient, tasks: list[Task], time_start: datetime, time_end: datetime
 ) -> list[Outcome]:
     """Fetch authored commits for every ``(org, repo)`` in ``tasks``, once per repo.
 
     Tasks are grouped by repo and the repo's commit history is fetched a single time,
     then filtered to the tracked logins for that repo — fewer queries than fetching per
     ``(repo, contributor)``. Returns one :class:`Outcome` per repo (records keyed by
-    ``_COMMIT_COLUMNS``); throttle exhaustion propagates. With a ``store``, repos already
-    checkpointed in a prior run are reused instead of re-fetched.
+    ``_COMMIT_COLUMNS``); throttle exhaustion propagates.
     """
     since = time_start.strftime("%Y-%m-%dT%H:%M:%SZ")
     until = time_end.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -147,14 +139,8 @@ async def fetch_commits(
         by_repo.setdefault((owner, repo), set()).add(user)
     return await asyncio.gather(
         *[
-            run_or_resume(
-                store,
-                CheckpointStore.key(
-                    "commits", f"{owner}/{repo}", ",".join(sorted(tracked)), since, until
-                ),
-                lambda owner=owner, repo=repo, tracked=tracked: _commits_for_repo(
-                    client, owner, repo, tracked, since, until
-                ),
+            run_outcome(
+                _commits_for_repo(client, owner, repo, tracked, since, until),
                 what=f"commits for {owner}/{repo}",
             )
             for (owner, repo), tracked in by_repo.items()
@@ -213,21 +199,12 @@ async def fetch_resolved(
     contributors: list[Contributor],
     time_start: datetime,
     time_end: datetime,
-    *,
-    store: CheckpointStore | None = None,
 ) -> list[Outcome]:
     """Fetch closed issues/PRs each contributor was involved in. One Outcome per contributor."""
-    start_str = time_start.strftime("%Y-%m-%d")
-    end_str = time_end.strftime("%Y-%m-%d")
-    repos_fp = ",".join(sorted(f"{owner}/{repo}" for owner, repo, _ in tasks))
     return await asyncio.gather(
         *[
-            run_or_resume(
-                store,
-                CheckpointStore.key("resolved", username, repos_fp, start_str, end_str),
-                lambda username=username: _resolved_for_contributor(
-                    client, tasks, username, time_start, time_end
-                ),
+            run_outcome(
+                _resolved_for_contributor(client, tasks, username, time_start, time_end),
                 what=f"resolved for {username}",
             )
             for _name, username in contributors
@@ -259,8 +236,6 @@ def fetch_commits_and_resolved(
     time_end: datetime,
     *,
     max_workers: int = 10,
-    checkpoint_dir: Path | None = None,
-    resume: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, RunManifest]:
     """Fetch commits and resolved issues/PRs concurrently in one event loop.
 
@@ -269,19 +244,13 @@ def fetch_commits_and_resolved(
     budget. Returns ``(commits_df, resolved_df, manifest)`` — the resolved frame is
     de-duped/sorted, and the manifest records every per-unit outcome. Throttle
     exhaustion propagates out of :func:`asyncio.run` to fail the run loudly.
-
-    With ``checkpoint_dir``, completed units are persisted there; ``resume=True`` reuses a
-    prior crashed run's checkpoints, while the default clears them first for fresh data.
     """
-    store = CheckpointStore(checkpoint_dir) if checkpoint_dir is not None else None
-    if store is not None and not resume:
-        store.clear()
 
     async def _collect() -> tuple[list[Outcome], list[Outcome]]:
         async with AsyncGitHubClient(token, concurrency=max_workers) as client:
             return await asyncio.gather(
-                fetch_commits(client, tasks, time_start, time_end, store=store),
-                fetch_resolved(client, tasks, contributors, time_start, time_end, store=store),
+                fetch_commits(client, tasks, time_start, time_end),
+                fetch_resolved(client, tasks, contributors, time_start, time_end),
             )
 
     logger.info(

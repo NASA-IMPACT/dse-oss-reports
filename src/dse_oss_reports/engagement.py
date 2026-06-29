@@ -10,13 +10,11 @@ and discussions come from GraphQL; comments from the REST issue-search bridge. T
 import asyncio
 import logging
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 
-from dse_oss_reports.checkpoint import CheckpointStore, run_or_resume
 from dse_oss_reports.github_client import AsyncGitHubClient, search_item_repo
-from dse_oss_reports.outcome import RunManifest, collect_records
+from dse_oss_reports.outcome import RunManifest, collect_records, run_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -315,8 +313,6 @@ def fetch_engagement(
     time_end: datetime,
     *,
     max_workers: int = 10,
-    checkpoint_dir: Path | None = None,
-    resume: bool = False,
 ) -> tuple[pd.DataFrame, RunManifest]:
     """Fetch foundational engagement (reviews, comments, discussions, opened issues).
 
@@ -324,45 +320,27 @@ def fetch_engagement(
     discussions (GraphQL) across one async client, merges the raw records, and de-dupes to
     one row per distinct ``(contributor, item)``. Returns ``(df, manifest)`` with ``df``
     keyed by ``_ENGAGEMENT_COLUMNS``; throttle exhaustion propagates to fail the run.
-
-    With ``checkpoint_dir``, completed units are persisted there; ``resume=True`` reuses a
-    prior crashed run's checkpoints, while the default clears them first for fresh data.
     """
     iso_from = time_start.strftime("%Y-%m-%dT%H:%M:%SZ")
     iso_to = time_end.strftime("%Y-%m-%dT%H:%M:%SZ")
-    start_str = time_start.strftime("%Y-%m-%d")
-    end_str = time_end.strftime("%Y-%m-%d")
     tracked = {username for _name, username in contributors}
-    tracked_fp = ",".join(sorted(tracked))
     repos = sorted({(org, repo) for org, repo, _user in tasks})
-
-    store = CheckpointStore(checkpoint_dir) if checkpoint_dir is not None else None
-    if store is not None and not resume:
-        store.clear()
-
-    def _user_repos_fp(username: str) -> str:
-        return ",".join(sorted(f"{o}/{r}" for o, r, u in tasks if u == username))
 
     async def _collect() -> list:
         async with AsyncGitHubClient(token, concurrency=max_workers) as client:
             jobs = []
             for _name, username in contributors:
-                user_fp = _user_repos_fp(username)
                 jobs.append(
-                    run_or_resume(
-                        store,
-                        CheckpointStore.key("reviews", username, user_fp, iso_from, iso_to),
-                        lambda username=username: _fetch_reviews_and_opened_for_contributor(
+                    run_outcome(
+                        _fetch_reviews_and_opened_for_contributor(
                             client, tasks, username, iso_from, iso_to
                         ),
                         what=f"reviews/opened for {username}",
                     )
                 )
                 jobs.append(
-                    run_or_resume(
-                        store,
-                        CheckpointStore.key("comments", username, user_fp, start_str, end_str),
-                        lambda username=username: _fetch_comment_threads_for_contributor(
+                    run_outcome(
+                        _fetch_comment_threads_for_contributor(
                             client, tasks, username, time_start, time_end
                         ),
                         what=f"comments for {username}",
@@ -370,14 +348,8 @@ def fetch_engagement(
                 )
             for org, repo in repos:
                 jobs.append(
-                    run_or_resume(
-                        store,
-                        CheckpointStore.key(
-                            "discussions", f"{org}/{repo}", tracked_fp, iso_from, iso_to
-                        ),
-                        lambda org=org, repo=repo: _fetch_discussions_for_repo(
-                            client, org, repo, tracked, iso_from, iso_to
-                        ),
+                    run_outcome(
+                        _fetch_discussions_for_repo(client, org, repo, tracked, iso_from, iso_to),
                         what=f"discussions for {org}/{repo}",
                     )
                 )

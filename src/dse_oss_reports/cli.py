@@ -45,7 +45,6 @@ def run_commits_report(
     pi: str | None = None,
     max_workers: int = 10,
     output_dir: Path = Path("output"),
-    resume: bool = False,
 ) -> dict[str, Path]:
     """Fetch authored commits + resolved issues/PRs for one PI, write both CSVs.
 
@@ -80,8 +79,6 @@ def run_commits_report(
         time_start,
         time_end,
         max_workers=max_workers,
-        checkpoint_dir=output_dir / ".checkpoints" / pi / "commits",
-        resume=resume,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -104,7 +101,6 @@ def run_engagement_report(
     pi: str | None = None,
     max_workers: int = 10,
     output_dir: Path = Path("output"),
-    resume: bool = False,
 ) -> dict[str, Path]:
     """Fetch foundational engagement for one PI and write ``{pi}-engagement.csv``.
 
@@ -136,8 +132,6 @@ def run_engagement_report(
         time_start,
         time_end,
         max_workers=max_workers,
-        checkpoint_dir=output_dir / ".checkpoints" / pi / "engagement",
-        resume=resume,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)

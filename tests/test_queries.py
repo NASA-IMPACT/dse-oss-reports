@@ -139,32 +139,6 @@ def test_fetch_commits_throttle_propagates_as_hard_failure():
         run(go())
 
 
-def test_fetch_commits_reuses_checkpoint_without_http(tmp_path):
-    from dse_oss_reports.checkpoint import CheckpointStore
-
-    since = datetime(2026, 1, 1).strftime("%Y-%m-%dT%H:%M:%SZ")
-    until = datetime(2026, 4, 1).strftime("%Y-%m-%dT%H:%M:%SZ")
-    store = CheckpointStore(tmp_path)
-    key = CheckpointStore.key("commits", "acme/widget", "alice", since, until)
-    store.save(key, Outcome.ok("commits for acme/widget", [{"sha": "cached"}]))
-
-    def handler(request):  # would 500 if ever called
-        raise AssertionError("network must not be hit on a checkpoint reuse")
-
-    async def go():
-        async with mock_client(handler) as c:
-            return await fetch_commits(
-                c,
-                [("acme", "widget", "alice")],
-                datetime(2026, 1, 1),
-                datetime(2026, 4, 1),
-                store=store,
-            )
-
-    rows = collect_records(run(go()))
-    assert rows == [{"sha": "cached"}]
-
-
 # ---------------------------------------------------------------------------
 # fetch_resolved (async, REST search bridge)
 # ---------------------------------------------------------------------------
@@ -286,32 +260,3 @@ def test_fetch_commits_and_resolved_builds_frames_and_dedups(monkeypatch):
     assert len(resolved_df) == 1  # cross-contributor duplicate collapsed
     assert resolved_df.iloc[0]["number"] == 42
     assert manifest.degraded_fraction() == 0.0
-
-
-def test_fetch_commits_and_resolved_clears_checkpoints_unless_resuming(monkeypatch, tmp_path):
-    from dse_oss_reports.checkpoint import CheckpointStore
-
-    ckpt = tmp_path / "ck"
-    store = CheckpointStore(ckpt)
-    stale = CheckpointStore.key("stale-unit")
-    store.save(stale, Outcome.ok("stale", [{"x": 1}]))
-
-    async def fake_commits(client, tasks, ts, te, *, store=None):
-        return []
-
-    async def fake_resolved(client, tasks, contributors, ts, te, *, store=None):
-        return []
-
-    monkeypatch.setattr(queries, "fetch_commits", fake_commits)
-    monkeypatch.setattr(queries, "fetch_resolved", fake_resolved)
-    monkeypatch.setattr(queries, "AsyncGitHubClient", lambda *a, **k: _DummyClient())
-
-    args = (None, [], [], datetime(2026, 1, 1), datetime(2026, 4, 1))
-    # Default (fresh) run wipes a prior run's checkpoints.
-    queries.fetch_commits_and_resolved(*args, checkpoint_dir=ckpt, resume=False)
-    assert not store.has(stale)
-
-    # A resume keeps them so completed units aren't refetched.
-    store.save(stale, Outcome.ok("stale", [{"x": 1}]))
-    queries.fetch_commits_and_resolved(*args, checkpoint_dir=ckpt, resume=True)
-    assert store.has(stale)
