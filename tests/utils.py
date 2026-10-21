@@ -17,7 +17,7 @@ def run(coro):
 
 async def noop_sleep(_seconds):
     """An ``asyncio.sleep`` stand-in that returns immediately (no real backoff in tests)."""
-    return None
+    return
 
 
 def mock_client(handler, **kw) -> AsyncGitHubClient:

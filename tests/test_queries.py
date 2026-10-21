@@ -15,7 +15,6 @@ from dse_oss_reports.outcome import Outcome, collect_records
 from dse_oss_reports.queries import fetch_commits, fetch_commits_and_resolved, fetch_resolved
 from tests.utils import mock_client, run, search_handler, search_item
 
-
 # ---------------------------------------------------------------------------
 # Fixtures: GraphQL commit-history + REST search payloads
 # ---------------------------------------------------------------------------

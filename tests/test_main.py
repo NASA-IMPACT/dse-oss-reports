@@ -269,7 +269,6 @@ def test_run_all_runs_four_subcommands_in_order(monkeypatch, tmp_path):
     def make_fake(name):
         def fake(*args, **kwargs):
             calls.append(name)
-            return None
 
         return fake
 

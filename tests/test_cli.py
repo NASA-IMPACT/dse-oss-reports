@@ -22,15 +22,15 @@ from dse_oss_reports.outcome import RunManifest
 
 
 def make_settings(**overrides) -> TeamSettings:
-    defaults = dict(
-        team_name="ODD",
-        team_display_name="VEDA/EODC ODD",
-        github_org="NASA-IMPACT",
-        github_repo="veda-odd",
-        site_url="example.github.io/team",
-        objectives_page_url="https://example.com/team/objectives",
-        token_env_var="GH_PAT",
-    )
+    defaults = {
+        "team_name": "ODD",
+        "team_display_name": "VEDA/EODC ODD",
+        "github_org": "NASA-IMPACT",
+        "github_repo": "veda-odd",
+        "site_url": "example.github.io/team",
+        "objectives_page_url": "https://example.com/team/objectives",
+        "token_env_var": "GH_PAT",
+    }
     return TeamSettings(**(defaults | overrides))
 
 
@@ -81,7 +81,7 @@ def test_run_commits_report_writes_both_csvs_at_harmonized_paths(
         ("globex", "doohickey", "alice"),
         ("globex", "doohickey", "carol"),
     }
-    assert set(c[1] for c in contributors) == {"alice", "carol"}
+    assert {c[1] for c in contributors} == {"alice", "carol"}
 
 
 def test_run_commits_report_defaults_pi_to_current(

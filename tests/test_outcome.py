@@ -8,7 +8,6 @@ from dse_oss_reports.outcome import Outcome, RunManifest, collect_records, run_o
 from dse_oss_reports.retry import RateLimitExhausted
 from tests.utils import run
 
-
 # --- Outcome / RunManifest -------------------------------------------------
 
 

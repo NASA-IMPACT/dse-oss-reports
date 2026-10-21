@@ -17,7 +17,6 @@ from dse_oss_reports.engagement import (
 )
 from tests.utils import mock_client, run, search_handler, search_item
 
-
 # ---------------------------------------------------------------------------
 # reviews + opened (GraphQL contributionsCollection)
 # ---------------------------------------------------------------------------

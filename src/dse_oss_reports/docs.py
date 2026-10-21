@@ -108,8 +108,10 @@ def render_objectives_md(
     lines = [
         "# Quarterly Objectives",
         "",
-        f"This page tracks quarterly objectives for the {settings.team_display_name} team "
-        "and the open-source repositories they touch across Program Increments (PIs).",
+        (
+            f"This page tracks quarterly objectives for the {settings.team_display_name} team "
+            "and the open-source repositories they touch across Program Increments (PIs)."
+        ),
         "",
     ]
 
@@ -190,9 +192,11 @@ def _render_footer(repo_url: str) -> list[str]:
         "",
         "## Configuration",
         "",
-        f"Objectives data lives in [`reports/_objectives_data.json`]"
-        f"({repo_url}/blob/main/reports/_objectives_data.json) — auto-generated from "
-        "GitHub issues by `dse_oss_reports.generator.ObjectivesGenerator`.",
+        (
+            f"Objectives data lives in [`reports/_objectives_data.json`]"
+            f"({repo_url}/blob/main/reports/_objectives_data.json) — auto-generated from "
+            "GitHub issues by `dse_oss_reports.generator.ObjectivesGenerator`."
+        ),
         "",
         "To regenerate this page:",
         "",

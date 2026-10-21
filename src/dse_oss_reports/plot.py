@@ -9,15 +9,15 @@ import matplotlib
 # Use the non-interactive backend so charts render in headless environments (CI, cron).
 matplotlib.use("Agg")
 
-import matplotlib.colors as mcolors  # noqa: E402
-import matplotlib.pyplot as plt  # noqa: E402
-import pandas as pd  # noqa: E402
-from matplotlib import colormaps  # noqa: E402
-from matplotlib.patches import Patch  # noqa: E402
-from matplotlib.ticker import MaxNLocator  # noqa: E402
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib import colormaps
+from matplotlib.patches import Patch
+from matplotlib.ticker import MaxNLocator
 
-from dse_oss_reports.objectives import ObjectivesDict  # noqa: E402
-from dse_oss_reports.settings import TeamSettings  # noqa: E402
+from dse_oss_reports.objectives import ObjectivesDict
+from dse_oss_reports.settings import TeamSettings
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def _render_caveats(ax, lines: list[str]) -> None:
         horizontalalignment="right",
         verticalalignment="top",
         transform=ax.transAxes,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8),
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": "gray", "alpha": 0.8},
     )
 
 
@@ -209,8 +209,10 @@ def plot_counts(
             "- Merged PRs counted as one commit",
             "- Individual changes may span multiple PRs",
             "- Split bars indicate repos in multiple objectives",
-            f"- Includes all commits by {settings.team_display_name} members to listed repos, "
-            "regardless of project",
+            (
+                f"- Includes all commits by {settings.team_display_name} members to listed repos, "
+                "regardless of project"
+            ),
             "",
             f"Objective details: {_strip_scheme(settings.objectives_page_url)}",
         ],
@@ -362,8 +364,10 @@ def plot_combined_counts(
             "- Only community-governed open source repositories are tracked",
             "- Merged PRs counted as one commit",
             "- Individual changes may span multiple PRs",
-            "- Split bars indicate repos contributing to multiple objectives "
-            "(within or across teams)",
+            (
+                "- Split bars indicate repos contributing to multiple objectives "
+                "(within or across teams)"
+            ),
             f"- Includes all commits by {members_clause} to listed repos, regardless of project",
             "- A commit appearing in multiple teams' planning repos is counted once",
             "",
