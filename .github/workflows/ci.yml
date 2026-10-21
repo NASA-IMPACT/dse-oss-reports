@@ -27,10 +27,10 @@ jobs:
         run: uv sync --all-extras
 
       - name: Lint
-        run: uv run ruff check
+        run: uv run --frozen ruff check
 
       - name: Format check
-        run: uv run ruff format --check
+        run: uv run --frozen ruff format --check
 
       - name: Test
-        run: uv run pytest -q
+        run: uv run --frozen pytest -q
