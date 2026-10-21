@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from typing import Self
 
 import httpx
 
@@ -65,7 +66,7 @@ class AsyncGitHubClient:
         self._sleep = sleep
         self._now = now
 
-    async def __aenter__(self) -> "AsyncGitHubClient":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *_exc) -> None:

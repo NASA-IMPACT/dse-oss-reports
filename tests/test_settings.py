@@ -6,15 +6,15 @@ from dse_oss_reports import TeamSettings
 
 
 def make_settings(**overrides) -> TeamSettings:
-    defaults = dict(
-        team_name="ODD",
-        team_display_name="VEDA/EODC ODD",
-        github_org="NASA-IMPACT",
-        github_repo="veda-odd",
-        site_url="nasa-impact.github.io/veda-odd",
-        objectives_page_url="https://nasa-impact.github.io/veda-odd/objectives",
-        token_env_var="GH_PAT",
-    )
+    defaults = {
+        "team_name": "ODD",
+        "team_display_name": "VEDA/EODC ODD",
+        "github_org": "NASA-IMPACT",
+        "github_repo": "veda-odd",
+        "site_url": "nasa-impact.github.io/veda-odd",
+        "objectives_page_url": "https://nasa-impact.github.io/veda-odd/objectives",
+        "token_env_var": "GH_PAT",
+    }
     return TeamSettings(**(defaults | overrides))
 
 
