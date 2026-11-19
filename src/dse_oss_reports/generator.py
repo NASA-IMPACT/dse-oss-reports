@@ -20,6 +20,7 @@ _PI_LABELS = (
     "pi-26.2-objective",
     "pi-26.3-objective",
     "pi-26.4-objective",
+    "pi-27.1-objective",
 )
 _PI_LABEL_RE = re.compile(r"pi-(\d+\.\d+)-objective")
 
